@@ -146,6 +146,10 @@ py -3 -m signal_lab.cli.validate_networks
 
 Qualifying network replays are written to `results/networks/` with the genome, seed, complete particle state, node definitions, edge definitions, topology history, and raw metrics. The Three.js viewer's `NETWORK DEBUG` control displays node regions, node labels, centroid markers, and highlighted network edges; clicking a node shows both network and node metrics.
 
+## Controlled experiment workspace
+
+The `Experiment` dashboard tab and `signal_lab/experiment/protocol.py` provide a separate controlled branch-comparison workspace for later studies. It clones a captured reference state and keeps branch measurements/replays distinct from the independently randomized Experiment 001 baseline. The baseline search and network validation commands do not invoke this workspace.
+
 ## Scientific scope
 
 Phase 1 provides mechanics for later experiments; it does not claim that visually interesting behavior is communication, computation, life, or novelty. Future phases must retain raw measurements, controls, seeds, configuration, and complete replays.

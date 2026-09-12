@@ -508,6 +508,201 @@ class SimulatorView:
         self.status_var.set(f"{name} view is reserved for a later experiment phase")
         self._log(f"{name} tab selected")
 
+    def _open_experiment_window(self) -> None:
+        if self.experiment_window is not None and self.experiment_window.winfo_exists():
+            self.experiment_window.lift()
+            return
+        window = self.experiment_window = tk.Toplevel(self.root)
+        window.title("Project SIGNAL — Controlled Experiment")
+        window.geometry("1500x900")
+        window.minsize(1180, 720)
+        window.configure(bg=self.BG)
+        body = ttk.Frame(window, style="Dashboard.TFrame", padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        toolbar = ttk.Frame(body, style="Dashboard.TFrame")
+        toolbar.pack(fill=tk.X, pady=(0, 8))
+        for label, command in (("NEW EXPERIMENT", self._new_experiment), ("LOAD EXPERIMENT", self._load_experiment_dialog), ("SAVE EXPERIMENT", self._save_experiment_dialog), ("RUN", self._run_experiment), ("PAUSE", self._pause_experiment), ("RESET", self._reset_experiment), ("EXPORT", self._save_experiment_dialog)):
+            ttk.Button(toolbar, text=label, command=command, style="Primary.TButton" if label == "RUN" else "Dash.TButton").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(toolbar, text="Controlled protocol · independent branch clones", style="Status.TLabel").pack(side=tk.RIGHT)
+
+        columns = ttk.Frame(body, style="Dashboard.TFrame")
+        columns.pack(fill=tk.BOTH, expand=True)
+        columns.columnconfigure(0, weight=0, minsize=330)
+        columns.columnconfigure(1, weight=1, minsize=520)
+        columns.columnconfigure(2, weight=0, minsize=365)
+        columns.rowconfigure(0, weight=1)
+        left = self._panel(columns, "Experiment Setup")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        center = self._panel(columns, "Branch Visualization / Timeline")
+        center.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+        right = self._panel(columns, "Measurements / Results")
+        right.grid(row=0, column=2, sticky="nsew")
+        self._build_experiment_setup(left)
+        self._build_experiment_center(center)
+        self._build_experiment_results(right)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        if self.experiment_reference is None:
+            self._capture_experiment_reference()
+
+    def _build_experiment_setup(self, panel: ttk.Frame) -> None:
+        body = self._body(panel)
+        self.experiment_vars = {
+            "name": tk.StringVar(value="Experiment 001 Controlled Test"), "experiment_id": tk.StringVar(value="EXP_000001"),
+            "reference_step": tk.StringVar(value=str(self.engine.step_count)), "total_steps": tk.StringVar(value="3000"),
+            "measurement_interval": tk.StringVar(value="10"), "warmup_steps": tk.StringVar(value="0"),
+            "target_radius": tk.StringVar(value=f"{self.engine.genome.interaction_radius * 0.5:.1f}"), "impulse_magnitude": tk.StringVar(value="0.5"),
+            "bit0_angle": tk.StringVar(value="-45"), "bit1_angle": tk.StringVar(value="45"), "injection_step": tk.StringVar(value="0"),
+        }
+        for row, (label, key) in enumerate((("Experiment Name", "name"), ("Experiment ID", "experiment_id"), ("Reference Step", "reference_step"), ("Total Steps", "total_steps"), ("Measurement Interval", "measurement_interval"), ("Warmup Steps", "warmup_steps"))):
+            ttk.Label(body, text=label, style="Body.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(body, textvariable=self.experiment_vars[key], width=18).grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(body, text="Source Universe", style="PanelTitle.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        self.experiment_source = tk.StringVar(value="Current Simulator State")
+        ttk.Combobox(body, textvariable=self.experiment_source, values=("Current Simulator State", "Saved Universe", "Saved Structure Candidate", "Saved Network Candidate"), state="readonly", width=25).grid(row=7, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(body, text="CAPTURE CURRENT STATE AS REFERENCE", command=self._capture_experiment_reference, style="Dash.TButton").grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        self.experiment_reference_label = ttk.Label(body, text="Reference: not captured", style="Status.TLabel", wraplength=270)
+        self.experiment_reference_label.grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(body, text="Target Selection", style="PanelTitle.TLabel").grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 4))
+        self.experiment_target_type = tk.StringVar(value="NO TARGET")
+        ttk.Combobox(body, textvariable=self.experiment_target_type, values=("NO TARGET", "CLUSTER", "STRUCTURE", "NETWORK NODE", "CUSTOM REGION"), state="readonly", width=25).grid(row=11, column=0, columnspan=2, sticky="ew", pady=3)
+        self.experiment_target_type.trace_add("write", lambda *_args: self._refresh_experiment_target_widgets())
+        self.experiment_target_id = tk.StringVar(value="")
+        self.experiment_network_id = tk.StringVar(value="")
+        self.experiment_node_id = tk.StringVar(value="")
+        self.experiment_target_selector = ttk.Combobox(body, textvariable=self.experiment_target_id, state="readonly", width=25)
+        self.experiment_target_selector.grid(row=12, column=0, columnspan=2, sticky="ew", pady=3)
+        self.experiment_target_detail = ttk.Label(body, text="No target selected", style="Muted.TLabel", wraplength=270)
+        self.experiment_target_detail.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(body, text="Perturbation (velocity impulse)", style="PanelTitle.TLabel").grid(row=14, column=0, columnspan=2, sticky="w", pady=(5, 4))
+        for row, (label, key) in enumerate((("Target Radius", "target_radius"), ("Impulse Magnitude", "impulse_magnitude"), ("BIT-0 Angle", "bit0_angle"), ("BIT-1 Angle", "bit1_angle"), ("Injection Step", "injection_step")), start=15):
+            ttk.Label(body, text=label, style="Body.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(body, textvariable=self.experiment_vars[key], width=12).grid(row=row, column=1, sticky="e", pady=3)
+        ttk.Label(body, text="Observation Zones", style="PanelTitle.TLabel").grid(row=20, column=0, columnspan=2, sticky="w", pady=(10, 4))
+        self.experiment_zone_vars = [tk.BooleanVar(value=True) for _ in range(4)]
+        for index, (label, inner, outer) in enumerate((("Zone A", "1–2 R", ""), ("Zone B", "2–3 R", ""), ("Zone C", "3–4 R", ""), ("Zone D", "4–5 R", ""))):
+            ttk.Checkbutton(body, text=f"{label}  {inner}", variable=self.experiment_zone_vars[index]).grid(row=21 + index, column=0, columnspan=2, sticky="w", pady=2)
+        body.columnconfigure(1, weight=1)
+        self._refresh_experiment_target_widgets()
+
+    def _build_experiment_center(self, panel: ttk.Frame) -> None:
+        body = self._body(panel)
+        self.experiment_branch_selector = tk.StringVar(value="SIDE-BY-SIDE")
+        selector = ttk.Frame(body, style="Panel.TFrame")
+        selector.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(selector, text="View", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Combobox(selector, textvariable=self.experiment_branch_selector, values=("CONTROL", "BIT-0", "BIT-1", "SIDE-BY-SIDE", "DIFFERENCE MODE"), state="readonly", width=18).pack(side=tk.LEFT)
+        self.experiment_canvas = tk.Canvas(body, background="#000306", highlightthickness=1, highlightbackground=self.BORDER, height=410)
+        self.experiment_canvas.pack(fill=tk.BOTH, expand=True)
+        self.experiment_canvas.bind("<Button-1>", self._experiment_canvas_click)
+        self.experiment_status = ttk.Label(body, text="Capture a reference, then run the controlled protocol.", style="Status.TLabel")
+        self.experiment_status.pack(anchor="w", pady=(6, 4))
+        self.experiment_timeline = ttk.Label(body, text="Reference State  ─────────  Injection  ─────────  Measurements  ─────────  Experiment End", style="Muted.TLabel")
+        self.experiment_timeline.pack(anchor="w")
+        self.experiment_branch_tree = ttk.Treeview(body, columns=("branch", "perturbation", "status", "step", "result"), show="headings", height=5)
+        for column, heading in (("branch", "Branch"), ("perturbation", "Perturbation"), ("status", "Status"), ("step", "Step"), ("result", "Result")):
+            self.experiment_branch_tree.heading(column, text=heading)
+            self.experiment_branch_tree.column(column, width=112 if column != "result" else 190, anchor="w")
+        self.experiment_branch_tree.pack(fill=tk.X, pady=(8, 0))
+        self._reset_experiment_branch_table()
+
+    def _build_experiment_results(self, panel: ttk.Frame) -> None:
+        body = self._body(panel)
+        ttk.Label(body, text="Live Comparison", style="PanelTitle.TLabel").pack(anchor="w")
+        self.experiment_measurements = tk.Text(body, height=22, bg="#07131c", fg=self.TEXT, relief="flat", font=("Consolas", 9), wrap="word")
+        self.experiment_measurements.pack(fill=tk.BOTH, expand=True, pady=(5, 8))
+        self.experiment_measurements.insert(tk.END, "CONTROL\n  Ready\n\nBIT-0\n  Ready\n\nBIT-1\n  Ready\n\nBranch Separation\n  Awaiting run")
+        self.experiment_measurements.configure(state=tk.DISABLED)
+        self.experiment_summary_label = ttk.Label(body, text="Experiment not run", style="Body.TLabel", wraplength=330, justify=tk.LEFT)
+        self.experiment_summary_label.pack(anchor="w", pady=(4, 8))
+        repeat = ttk.LabelFrame(body, text="Repeatability", style="Panel.TFrame", padding=6)
+        repeat.pack(fill=tk.X)
+        ttk.Label(repeat, text="Trials 20 · Position noise 0.5% · Velocity noise 0.5%", style="Muted.TLabel").pack(anchor="w")
+        ttk.Button(repeat, text="RUN REPEATABILITY TEST", command=self._run_repeatability, style="Dash.TButton").pack(fill=tk.X, pady=(5, 0))
+
+    def _reset_experiment_branch_table(self) -> None:
+        if not hasattr(self, "experiment_branch_tree"):
+            return
+        for item in self.experiment_branch_tree.get_children():
+            self.experiment_branch_tree.delete(item)
+        perturbations = {"CONTROL": "none", "BIT-0": "impulse -45°", "BIT-1": "impulse +45°"}
+        for branch in BRANCH_NAMES:
+            self.experiment_branch_tree.insert("", tk.END, iid=branch, values=(branch, perturbations[branch], "Ready", "0", "-"))
+
+    def _capture_experiment_reference(self) -> None:
+        if not hasattr(self, "experiment_reference_label"):
+            return
+        self.experiment_reference = capture_reference(self.engine)
+        self.experiment_vars["reference_step"].set(str(self.experiment_reference.step))
+        self.experiment_vars["target_radius"].set(f"{self.experiment_reference.genome.interaction_radius * 0.5:.1f}")
+        self.experiment_reference_label.configure(text=f"Reference: immutable copy\nStep {self.experiment_reference.step:,} · {self.experiment_reference.state.count:,} particles\nGenome {self.experiment_reference.genome.genome_hash[:12]}")
+        self.experiment_discovered = discover_targets(self.experiment_reference)
+        self._refresh_experiment_target_widgets()
+        self.experiment_status.configure(text="Reference captured. All branches will clone this exact state.")
+        self._draw_experiment_canvas()
+
+    def _refresh_experiment_target_widgets(self) -> None:
+        if not hasattr(self, "experiment_target_selector"):
+            return
+        discovered = getattr(self, "experiment_discovered", {"clusters": [], "networks": []})
+        target_type = self.experiment_target_type.get()
+        if target_type in {"CLUSTER", "STRUCTURE"}:
+            values = [str(item.cluster_id) for item in discovered["clusters"]]
+            self.experiment_target_selector.configure(values=values, state="readonly")
+            if values and self.experiment_target_id.get() not in values:
+                self.experiment_target_id.set(values[0])
+        elif target_type == "NETWORK NODE":
+            values = [f"{network.network_id}:{node.node_id}" for network in discovered["networks"] for node in network.nodes]
+            self.experiment_target_selector.configure(values=values, state="readonly")
+            if values and self.experiment_target_id.get() not in values:
+                self.experiment_target_id.set(values[0])
+        else:
+            self.experiment_target_selector.configure(values=(), state="disabled")
+            self.experiment_target_id.set("")
+        self._update_experiment_target_detail()
+
+    def _update_experiment_target_detail(self) -> None:
+        if not hasattr(self, "experiment_target_detail"):
+            return
+        discovered = getattr(self, "experiment_discovered", {"clusters": [], "networks": []})
+        target_type = self.experiment_target_type.get()
+        target = None
+        if target_type in {"CLUSTER", "STRUCTURE"}:
+            target = next((item for item in discovered["clusters"] if str(item.cluster_id) == self.experiment_target_id.get()), None)
+            if target:
+                self.experiment_target_detail.configure(text=f"Target C{target.cluster_id}\nParticles {target.particle_count} · Age {target.age_steps}\nCentroid ({target.centroid[0]:.1f}, {target.centroid[1]:.1f})\nStructure Score {target.structure_score:.2f}")
+        elif target_type == "NETWORK NODE" and ":" in self.experiment_target_id.get():
+            network_id, node_id = self.experiment_target_id.get().split(":", 1)
+            network = next((item for item in discovered["networks"] if str(item.network_id) == network_id), None)
+            target = next((item for item in network.nodes if str(item.node_id) == node_id), None) if network else None
+            if target:
+                self.experiment_target_detail.configure(text=f"Target N{network_id}.{node_id}\nParticles {target.particle_count} · Age {target.age_steps}\nCentroid ({target.centroid[0]:.1f}, {target.centroid[1]:.1f})\nNetwork Score {network.network_score:.2f}")
+        elif target_type == "CUSTOM REGION":
+            self.experiment_target_detail.configure(text="Click the branch visualizer to place the custom region")
+        else:
+            self.experiment_target_detail.configure(text="No target selected")
+
+    def _experiment_canvas_click(self, event: tk.Event) -> None:
+        if self.experiment_target_type.get() != "CUSTOM REGION" or self.experiment_reference is None:
+            return
+        width = max(1, self.experiment_canvas.winfo_width())
+        height = max(1, self.experiment_canvas.winfo_height())
+        self.experiment_vars["custom_x"] = getattr(self, "experiment_vars", {}).get("custom_x", tk.StringVar())
+        self.experiment_vars["custom_y"] = getattr(self, "experiment_vars", {}).get("custom_y", tk.StringVar())
+        self.experiment_vars["custom_x"].set(f"{event.x / width * self.experiment_reference.simulation_config.width:.2f}")
+        self.experiment_vars["custom_y"].set(f"{event.y / height * self.experiment_reference.simulation_config.height:.2f}")
+        self._update_experiment_target_detail()
+        self._draw_experiment_canvas()
+
+    def _experiment_spec(self) -> ExperimentSpec:
+        values = {key: variable.get() for key, variable in self.experiment_vars.items()}
+        zones = [MeasurementZone(f"Zone {letter}", float(index + 1), float(index + 2), self.experiment_zone_vars[index].get()) for index, letter in enumerate(("A", "B", "C", "D"))]
+        target_id = self.experiment_target_id.get()
+        network_id = self.experiment_node_id.get()
+        node_id = ""
+        if self.experiment_target_type.get() == "NETWORK NODE" and ":" in target_id:
+            network_id, node_id = target_id.split(":", 1)
+        return ExperimentSpec(name=values["name"], experiment_id=values["experiment_id"], reference_step=int(float(values["reference_step"])), total_steps=int(float(values["total_steps"])), measurement_interval=int(float(values["measurement_interval"])), warmup_steps=int(float(values["warmup_steps"])), target_type=self.experiment_target_type.get(), target_id=target_id, network_id=network_id, node_id=node_id, custom_x=float(values.get("custom_x", self.engine.config.width / 2)), custom_y=float(values.get("custom_y", self.engine.config.height / 2)), target_radius=float(values["target_radius"]), impulse_magnitude=float(values["impulse_magnitude"]), bit0_angle=float(values["bit0_angle"]), bit1_angle=float(values["bit1_angle"]), injection_step=int(float(values["injection_step"])), zones=zones)
+
     def _open_search_window(self) -> None:
         if getattr(self, "search_window", None) is not None and self.search_window.winfo_exists():
             self.search_window.lift()
