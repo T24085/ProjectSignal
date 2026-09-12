@@ -14,7 +14,7 @@ from typing import Callable
 import numpy as np
 
 from signal_lab.experiment.clustering import ClusterTracker
-from signal_lab.experiment.networks import NetworkTracker
+from signal_lab.experiment.networks import NetworkObservation, NetworkTracker
 from signal_lab.physics.engine import SimulationConfig, SimulationEngine
 from signal_lab.physics.genome import Genome
 from signal_lab.physics.particle import ParticleState
@@ -67,6 +67,8 @@ class ExperimentSpec:
             raise ValueError("Target radius must be positive and impulse magnitude cannot be negative")
         if self.injection_step < 0 or self.injection_step > self.total_steps:
             raise ValueError("Injection step must be within the experiment window")
+        if not np.isclose(abs(self.bit0_angle), abs(self.bit1_angle)) or np.isclose(self.bit0_angle, self.bit1_angle):
+            raise ValueError("BIT-0 and BIT-1 angles must be equal-magnitude alternatives")
         if self.repeat_trials < 1:
             raise ValueError("Trials must be positive")
 
@@ -161,7 +163,7 @@ def _spatial_entropy(positions: np.ndarray, width: float, height: float, bins: i
     return float(-np.sum(probabilities * np.log(probabilities)))
 
 
-def _branch_measurement(engine: SimulationEngine, branch: str, step: int, zone: MeasurementZone, target_center: np.ndarray, target_ids: frozenset[int], cluster_count: int, structure_score: float, network_score: float | None) -> dict[str, object]:
+def _branch_measurement(engine: SimulationEngine, branch: str, step: int, zone: MeasurementZone, target_center: np.ndarray, target_ids: frozenset[int], cluster_count: int, structure_score: float, network: NetworkObservation | None) -> dict[str, object]:
     distances = _distance_from_center(engine.state.positions, target_center, engine.config.width, engine.config.height)
     radius = engine.genome.interaction_radius
     selection = (distances >= zone.inner_multiple * radius) & (distances < zone.outer_multiple * radius)
@@ -193,7 +195,15 @@ def _branch_measurement(engine: SimulationEngine, branch: str, step: int, zone: 
         "angular_momentum": angular_momentum,
         "target_particle_count": int(target_count),
         "structure_score": float(structure_score),
-        "network_score": network_score,
+        "network_score": network.network_score if network is not None else None,
+        "network_edge_count": network.edge_count if network is not None else 0,
+        "network_persistent_edge_count": network.persistent_edge_count if network is not None else 0,
+        "network_density": network.network_density if network is not None else 0.0,
+        "network_topology_persistence": network.topology_persistence if network is not None else 0.0,
+        "network_node_identity_stability": network.node_identity_stability if network is not None else 0.0,
+        "network_edge_identity_stability": network.edge_identity_stability if network is not None else 0.0,
+        "network_graph_diameter": network.graph_diameter if network is not None else 0,
+        "network_average_shortest_path": network.average_shortest_path_length if network is not None else 0.0,
     }
 
 
@@ -236,10 +246,9 @@ def run_experiment(spec: ExperimentSpec, reference: ReferenceState, progress: Pr
                 selected_cluster = next((item for item in tracking.clusters if target_ids and target_ids.issubset(item.particle_ids)), None)
                 structure_score = selected_cluster.structure_score if selected_cluster else max((item.structure_score for item in tracking.clusters), default=0.0)
                 selected_network = next((item for item in networks if item.cluster_id == selected_cluster.cluster_id), None) if selected_cluster else None
-                network_score = selected_network.network_score if selected_network else None
                 for zone in spec.zones:
                     if zone.enabled:
-                        measurements.append(_branch_measurement(engine, branch, engine.step_count, zone, target_center, target_ids, len(tracking.clusters), structure_score, network_score))
+                        measurements.append(_branch_measurement(engine, branch, engine.step_count, zone, target_center, target_ids, len(tracking.clusters), structure_score, selected_network))
                 next_measurement += spec.measurement_interval
                 if progress:
                     progress(branch, {"step": relative_step, "total_steps": spec.total_steps, "measurements": len(measurements)})
@@ -289,6 +298,37 @@ def compare_branches(spec: ExperimentSpec, branches: dict[str, BranchRun]) -> di
         "control_deviation": float(np.mean(control_pairs)) if control_pairs else 0.0,
         "outcome_classification": outcome,
         "branch_separation_label": "Branch Separation",
+    }
+
+
+def run_repeatability_test(spec: ExperimentSpec, reference: ReferenceState, progress: Callable[[int, int], None] | None = None) -> dict[str, object]:
+    """Repeat a protocol with small deterministic perturbations of the reference."""
+    spec.validate()
+    trials = int(spec.repeat_trials)
+    rng = np.random.default_rng(reference.seed + 0x51A7)
+    successes = 0
+    separations: list[float] = []
+    position_scale = max(reference.simulation_config.width, reference.simulation_config.height) * spec.repeat_position_noise_percent / 100.0
+    for trial in range(1, trials + 1):
+        noisy = reference.copy()
+        noisy.state.positions[:] = (noisy.state.positions + rng.normal(0.0, position_scale, noisy.state.positions.shape)) % np.asarray([noisy.simulation_config.width, noisy.simulation_config.height])
+        velocity_scale = max(float(np.mean(np.linalg.norm(noisy.state.velocities, axis=1))), 0.01) * spec.repeat_velocity_noise_percent / 100.0
+        noisy.state.velocities[:] += rng.normal(0.0, velocity_scale, noisy.state.velocities.shape)
+        result = run_experiment(spec, noisy)
+        separation = float(result.summary["bit0_vs_bit1_maximum_separation"]["distance"])
+        separations.append(separation)
+        if separation > 1e-6:
+            successes += 1
+        if progress:
+            progress(trial, trials)
+    return {
+        "trials": trials,
+        "successful_trials": successes,
+        "success_rate": successes / max(trials, 1),
+        "mean_maximum_separation": float(np.mean(separations)) if separations else 0.0,
+        "median_maximum_separation": float(np.median(separations)) if separations else 0.0,
+        "position_noise_percent": spec.repeat_position_noise_percent,
+        "velocity_noise_percent": spec.repeat_velocity_noise_percent,
     }
 
 

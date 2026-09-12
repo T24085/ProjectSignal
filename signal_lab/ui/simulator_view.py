@@ -33,7 +33,7 @@ from signal_lab.physics.engine import SimulationConfig, SimulationEngine
 from signal_lab.physics.genome import Genome
 from signal_lab.physics.particle import ParticleState
 from signal_lab.storage.replay import save_structure_snapshot
-from signal_lab.storage.replay import load_structure_snapshot
+from signal_lab.storage.replay import load_network_snapshot, load_structure_snapshot
 from signal_lab.storage.export import collect_export_data, export_all
 from signal_lab.search.runner import SearchConfig, load_baseline_rows, run_search
 from signal_lab.ui.three_viewer import ThreeViewerServer
@@ -97,6 +97,7 @@ class SimulatorView:
         self.three_viewer: ThreeViewerServer | None = None
         self.experiment_window: tk.Toplevel | None = None
         self.experiment_thread: Thread | None = None
+        self.experiment_repeat_thread: Thread | None = None
         self.experiment_pause_event: Event | None = None
         self.experiment_reference: ReferenceState | None = None
         self.current_experiment: ExperimentRun | None = None
@@ -521,7 +522,7 @@ class SimulatorView:
         body.pack(fill=tk.BOTH, expand=True)
         toolbar = ttk.Frame(body, style="Dashboard.TFrame")
         toolbar.pack(fill=tk.X, pady=(0, 8))
-        for label, command in (("NEW EXPERIMENT", self._new_experiment), ("LOAD EXPERIMENT", self._load_experiment_dialog), ("SAVE EXPERIMENT", self._save_experiment_dialog), ("RUN", self._run_experiment), ("PAUSE", self._pause_experiment), ("RESET", self._reset_experiment), ("EXPORT", self._save_experiment_dialog)):
+        for label, command in (("NEW EXPERIMENT", self._new_experiment), ("LOAD EXPERIMENT", self._load_experiment_dialog), ("SAVE EXPERIMENT", self._save_experiment_dialog), ("RUN", self._run_experiment), ("PAUSE", self._pause_experiment), ("RESET", self._reset_experiment), ("EXPORT", self._export_experiment_dialog)):
             ttk.Button(toolbar, text=label, command=command, style="Primary.TButton" if label == "RUN" else "Dash.TButton").pack(side=tk.LEFT, padx=(0, 5))
         ttk.Label(toolbar, text="Controlled protocol · independent branch clones", style="Status.TLabel").pack(side=tk.RIGHT)
 
@@ -558,7 +559,9 @@ class SimulatorView:
             ttk.Entry(body, textvariable=self.experiment_vars[key], width=18).grid(row=row, column=1, sticky="ew", pady=3)
         ttk.Label(body, text="Source Universe", style="PanelTitle.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 4))
         self.experiment_source = tk.StringVar(value="Current Simulator State")
-        ttk.Combobox(body, textvariable=self.experiment_source, values=("Current Simulator State", "Saved Universe", "Saved Structure Candidate", "Saved Network Candidate"), state="readonly", width=25).grid(row=7, column=0, columnspan=2, sticky="ew", pady=3)
+        source_selector = ttk.Combobox(body, textvariable=self.experiment_source, values=("Current Simulator State", "Saved Universe", "Saved Structure Candidate", "Saved Network Candidate"), state="readonly", width=25)
+        source_selector.grid(row=7, column=0, columnspan=2, sticky="ew", pady=3)
+        source_selector.bind("<<ComboboxSelected>>", self._experiment_source_selected)
         ttk.Button(body, text="CAPTURE CURRENT STATE AS REFERENCE", command=self._capture_experiment_reference, style="Dash.TButton").grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 8))
         self.experiment_reference_label = ttk.Label(body, text="Reference: not captured", style="Status.TLabel", wraplength=270)
         self.experiment_reference_label.grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -571,16 +574,22 @@ class SimulatorView:
         self.experiment_node_id = tk.StringVar(value="")
         self.experiment_target_selector = ttk.Combobox(body, textvariable=self.experiment_target_id, state="readonly", width=25)
         self.experiment_target_selector.grid(row=12, column=0, columnspan=2, sticky="ew", pady=3)
+        self.experiment_target_selector.bind("<<ComboboxSelected>>", lambda _event: self._update_experiment_target_detail())
         self.experiment_target_detail = ttk.Label(body, text="No target selected", style="Muted.TLabel", wraplength=270)
         self.experiment_target_detail.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        ttk.Label(body, text="Perturbation (velocity impulse)", style="PanelTitle.TLabel").grid(row=14, column=0, columnspan=2, sticky="w", pady=(5, 4))
-        for row, (label, key) in enumerate((("Target Radius", "target_radius"), ("Impulse Magnitude", "impulse_magnitude"), ("BIT-0 Angle", "bit0_angle"), ("BIT-1 Angle", "bit1_angle"), ("Injection Step", "injection_step")), start=15):
+        ttk.Label(body, text="Perturbation", style="PanelTitle.TLabel").grid(row=14, column=0, columnspan=2, sticky="w", pady=(5, 4))
+        self.experiment_perturbation_type = tk.StringVar(value="VELOCITY IMPULSE")
+        ttk.Combobox(body, textvariable=self.experiment_perturbation_type, values=("VELOCITY IMPULSE", "POSITION OFFSET", "SPECIES FLIP", "FORCE PULSE", "NONE"), state="readonly", width=25).grid(row=15, column=0, columnspan=2, sticky="ew", pady=3)
+        for row, (label, key) in enumerate((("Target Radius", "target_radius"), ("Impulse Magnitude", "impulse_magnitude"), ("BIT-0 Angle", "bit0_angle"), ("BIT-1 Angle", "bit1_angle"), ("Injection Step", "injection_step")), start=16):
             ttk.Label(body, text=label, style="Body.TLabel").grid(row=row, column=0, sticky="w", pady=3)
             ttk.Entry(body, textvariable=self.experiment_vars[key], width=12).grid(row=row, column=1, sticky="e", pady=3)
-        ttk.Label(body, text="Observation Zones", style="PanelTitle.TLabel").grid(row=20, column=0, columnspan=2, sticky="w", pady=(10, 4))
+        ttk.Label(body, text="Observation Zones", style="PanelTitle.TLabel").grid(row=21, column=0, columnspan=2, sticky="w", pady=(10, 4))
         self.experiment_zone_vars = [tk.BooleanVar(value=True) for _ in range(4)]
         for index, (label, inner, outer) in enumerate((("Zone A", "1–2 R", ""), ("Zone B", "2–3 R", ""), ("Zone C", "3–4 R", ""), ("Zone D", "4–5 R", ""))):
-            ttk.Checkbutton(body, text=f"{label}  {inner}", variable=self.experiment_zone_vars[index]).grid(row=21 + index, column=0, columnspan=2, sticky="w", pady=2)
+            ttk.Checkbutton(body, text=f"{label}  {inner}", variable=self.experiment_zone_vars[index]).grid(row=22 + index, column=0, columnspan=2, sticky="w", pady=2)
+        self.experiment_stop_automatically = tk.BooleanVar(value=True)
+        ttk.Checkbutton(body, text="Stop automatically at total steps", variable=self.experiment_stop_automatically).grid(row=26, column=0, columnspan=2, sticky="w", pady=(5, 2))
+        ttk.Button(body, text="RUN TO STEP", command=self._run_experiment, style="Primary.TButton").grid(row=27, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         body.columnconfigure(1, weight=1)
         self._refresh_experiment_target_widgets()
 
@@ -590,7 +599,9 @@ class SimulatorView:
         selector = ttk.Frame(body, style="Panel.TFrame")
         selector.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(selector, text="View", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Combobox(selector, textvariable=self.experiment_branch_selector, values=("CONTROL", "BIT-0", "BIT-1", "SIDE-BY-SIDE", "DIFFERENCE MODE"), state="readonly", width=18).pack(side=tk.LEFT)
+        branch_selector = ttk.Combobox(selector, textvariable=self.experiment_branch_selector, values=("CONTROL", "BIT-0", "BIT-1", "SIDE-BY-SIDE", "DIFFERENCE MODE"), state="readonly", width=18)
+        branch_selector.pack(side=tk.LEFT)
+        branch_selector.bind("<<ComboboxSelected>>", lambda _event: self._draw_experiment_canvas())
         self.experiment_canvas = tk.Canvas(body, background="#000306", highlightthickness=1, highlightbackground=self.BORDER, height=410)
         self.experiment_canvas.pack(fill=tk.BOTH, expand=True)
         self.experiment_canvas.bind("<Button-1>", self._experiment_canvas_click)
@@ -624,7 +635,9 @@ class SimulatorView:
             return
         for item in self.experiment_branch_tree.get_children():
             self.experiment_branch_tree.delete(item)
-        perturbations = {"CONTROL": "none", "BIT-0": "impulse -45°", "BIT-1": "impulse +45°"}
+        bit0 = getattr(self, "experiment_vars", {}).get("bit0_angle")
+        bit1 = getattr(self, "experiment_vars", {}).get("bit1_angle")
+        perturbations = {"CONTROL": "none", "BIT-0": f"impulse {bit0.get()}°" if bit0 else "impulse -45°", "BIT-1": f"impulse {bit1.get()}°" if bit1 else "impulse +45°"}
         for branch in BRANCH_NAMES:
             self.experiment_branch_tree.insert("", tk.END, iid=branch, values=(branch, perturbations[branch], "Ready", "0", "-"))
 
@@ -634,11 +647,16 @@ class SimulatorView:
         self.experiment_reference = capture_reference(self.engine)
         self.experiment_vars["reference_step"].set(str(self.experiment_reference.step))
         self.experiment_vars["target_radius"].set(f"{self.experiment_reference.genome.interaction_radius * 0.5:.1f}")
-        self.experiment_reference_label.configure(text=f"Reference: immutable copy\nStep {self.experiment_reference.step:,} · {self.experiment_reference.state.count:,} particles\nGenome {self.experiment_reference.genome.genome_hash[:12]}")
+        self.experiment_reference_label.configure(text=self._experiment_reference_text(self.experiment_reference))
         self.experiment_discovered = discover_targets(self.experiment_reference)
         self._refresh_experiment_target_widgets()
         self.experiment_status.configure(text="Reference captured. All branches will clone this exact state.")
         self._draw_experiment_canvas()
+
+    def _experiment_reference_text(self, reference: ReferenceState) -> str:
+        return (f"Reference: immutable copy\nStep {reference.step:,} · {reference.state.count:,} particles\n"
+                f"Seed {reference.seed} · Species {reference.genome.species_count}\n"
+                f"Interaction radius {reference.genome.interaction_radius:.2f}\nGenome {reference.genome.genome_hash[:12]}")
 
     def _refresh_experiment_target_widgets(self) -> None:
         if not hasattr(self, "experiment_target_selector"):
@@ -701,7 +719,328 @@ class SimulatorView:
         node_id = ""
         if self.experiment_target_type.get() == "NETWORK NODE" and ":" in target_id:
             network_id, node_id = target_id.split(":", 1)
-        return ExperimentSpec(name=values["name"], experiment_id=values["experiment_id"], reference_step=int(float(values["reference_step"])), total_steps=int(float(values["total_steps"])), measurement_interval=int(float(values["measurement_interval"])), warmup_steps=int(float(values["warmup_steps"])), target_type=self.experiment_target_type.get(), target_id=target_id, network_id=network_id, node_id=node_id, custom_x=float(values.get("custom_x", self.engine.config.width / 2)), custom_y=float(values.get("custom_y", self.engine.config.height / 2)), target_radius=float(values["target_radius"]), impulse_magnitude=float(values["impulse_magnitude"]), bit0_angle=float(values["bit0_angle"]), bit1_angle=float(values["bit1_angle"]), injection_step=int(float(values["injection_step"])), zones=zones)
+        return ExperimentSpec(name=values["name"], experiment_id=values["experiment_id"], reference_step=int(float(values["reference_step"])), total_steps=int(float(values["total_steps"])), measurement_interval=int(float(values["measurement_interval"])), warmup_steps=int(float(values["warmup_steps"])), stop_automatically=self.experiment_stop_automatically.get(), target_type=self.experiment_target_type.get(), target_id=target_id, network_id=network_id, node_id=node_id, custom_x=float(values.get("custom_x", self.engine.config.width / 2)), custom_y=float(values.get("custom_y", self.engine.config.height / 2)), target_radius=float(values["target_radius"]), perturbation_type=self.experiment_perturbation_type.get(), impulse_magnitude=float(values["impulse_magnitude"]), bit0_angle=float(values["bit0_angle"]), bit1_angle=float(values["bit1_angle"]), injection_step=int(float(values["injection_step"])), zones=zones)
+
+    def _set_experiment_text(self, text: str) -> None:
+        if not hasattr(self, "experiment_measurements"):
+            return
+        self.experiment_measurements.configure(state=tk.NORMAL)
+        self.experiment_measurements.delete("1.0", tk.END)
+        self.experiment_measurements.insert(tk.END, text)
+        self.experiment_measurements.configure(state=tk.DISABLED)
+
+    def _sync_experiment_vars_from_spec(self, spec: ExperimentSpec) -> None:
+        fields = ("name", "experiment_id", "reference_step", "total_steps", "measurement_interval", "warmup_steps", "target_radius", "impulse_magnitude", "bit0_angle", "bit1_angle", "injection_step")
+        for key in fields:
+            if key in self.experiment_vars:
+                self.experiment_vars[key].set(str(getattr(spec, key)))
+        self.experiment_stop_automatically.set(spec.stop_automatically)
+        self.experiment_perturbation_type.set(spec.perturbation_type)
+        self.experiment_target_type.set(spec.target_type)
+        self.experiment_target_id.set(spec.target_id)
+        for index, zone in enumerate(spec.zones[:4]):
+            self.experiment_zone_vars[index].set(zone.enabled)
+
+    def _experiment_source_selected(self, _event: tk.Event | None = None) -> None:
+        source = self.experiment_source.get()
+        if source == "Current Simulator State":
+            self._capture_experiment_reference()
+            return
+        title = f"Select {source.lower()} directory"
+        selected = filedialog.askdirectory(title=title, parent=self.experiment_window)
+        if not selected:
+            self.experiment_source.set("Current Simulator State")
+            return
+        try:
+            path = Path(selected)
+            if (path / "experiment.json").exists():
+                spec, reference, _payload = load_experiment(path)
+                self.current_experiment = None
+                self.experiment_reference = reference
+                self._sync_experiment_vars_from_spec(spec)
+            elif (path / "structure.json").exists():
+                engine, _metadata = load_structure_snapshot(path)
+                self.experiment_reference = capture_reference(engine)
+            elif (path / "network.json").exists():
+                engine, _metadata = load_network_snapshot(path)
+                self.experiment_reference = capture_reference(engine)
+            else:
+                raise ValueError("Selected directory does not contain experiment.json, structure.json, or network.json")
+            reference = self.experiment_reference
+            self.experiment_vars["reference_step"].set(str(reference.step))
+            self.experiment_reference_label.configure(text=self._experiment_reference_text(reference))
+            self.experiment_discovered = discover_targets(reference)
+            self._refresh_experiment_target_widgets()
+            self.experiment_status.configure(text=f"Loaded {source.lower()} as the immutable reference.")
+            self._draw_experiment_canvas()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            messagebox.showerror("Reference load failed", str(error), parent=self.experiment_window)
+            self.experiment_source.set("Current Simulator State")
+
+    def _new_experiment(self) -> None:
+        if self.experiment_thread is not None and self.experiment_thread.is_alive():
+            messagebox.showinfo("Experiment running", "Pause or wait for the current experiment before creating a new one.", parent=self.experiment_window)
+            return
+        self.current_experiment = None
+        self.experiment_reference = None
+        self.experiment_source.set("Current Simulator State")
+        defaults = {"name": "Experiment 001 Controlled Test", "experiment_id": "EXP_000001", "reference_step": str(self.engine.step_count), "total_steps": "3000", "measurement_interval": "10", "warmup_steps": "0", "target_radius": f"{self.engine.genome.interaction_radius * 0.5:.1f}", "impulse_magnitude": "0.5", "bit0_angle": "-45", "bit1_angle": "45", "injection_step": "0"}
+        for key, value in defaults.items():
+            self.experiment_vars[key].set(value)
+        self.experiment_target_type.set("NO TARGET")
+        self.experiment_target_id.set("")
+        self._reset_experiment_branch_table()
+        self._set_experiment_text("CONTROL\n  Ready\n\nBIT-0\n  Ready\n\nBIT-1\n  Ready\n\nBranch Separation\n  Awaiting run")
+        self.experiment_summary_label.configure(text="Experiment not run")
+        self.experiment_status.configure(text="New experiment. Capture a reference before running.")
+        self._draw_experiment_canvas()
+
+    def _load_experiment_dialog(self) -> None:
+        selected = filedialog.askdirectory(title="Load Project SIGNAL experiment", parent=self.experiment_window)
+        if not selected:
+            return
+        try:
+            spec, reference, payload = load_experiment(selected)
+            self.current_experiment = None
+            self.experiment_reference = reference
+            self._sync_experiment_vars_from_spec(spec)
+            self.experiment_source.set("Saved Universe")
+            self.experiment_discovered = discover_targets(reference)
+            self._refresh_experiment_target_widgets()
+            self.experiment_reference_label.configure(text=self._experiment_reference_text(reference))
+            self._set_experiment_text(json.dumps(payload.get("summary", {}), indent=2, default=str))
+            self.experiment_summary_label.configure(text=f"Loaded {spec.experiment_id}\nSaved record: {Path(selected)}")
+            self.experiment_status.configure(text="Experiment loaded. Run creates fresh branch clones from the loaded reference.")
+            self._draw_experiment_canvas()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            messagebox.showerror("Experiment load failed", str(error), parent=self.experiment_window)
+
+    def _save_experiment_dialog(self) -> None:
+        if self.current_experiment is None:
+            messagebox.showinfo("Nothing to save", "Run the controlled experiment first.", parent=self.experiment_window)
+            return
+        try:
+            destination = save_experiment(self.current_experiment)
+            self.experiment_status.configure(text=f"Saved immutable experiment record: {destination}")
+        except (OSError, ValueError, FileExistsError) as error:
+            messagebox.showerror("Experiment save failed", str(error), parent=self.experiment_window)
+
+    def _export_experiment_dialog(self) -> None:
+        if self.current_experiment is None:
+            messagebox.showinfo("Nothing to export", "Run the controlled experiment first.", parent=self.experiment_window)
+            return
+        destination_root = filedialog.askdirectory(title="Choose export folder", parent=self.experiment_window)
+        if not destination_root:
+            return
+        try:
+            destination = save_experiment(self.current_experiment, destination_root)
+            self.experiment_status.configure(text=f"Exported experiment package: {destination}")
+        except (OSError, ValueError, FileExistsError) as error:
+            messagebox.showerror("Experiment export failed", str(error), parent=self.experiment_window)
+
+    def _run_experiment(self) -> None:
+        if self.experiment_thread is not None and self.experiment_thread.is_alive():
+            return
+        if self.experiment_reference is None:
+            self._capture_experiment_reference()
+        try:
+            spec = self._experiment_spec()
+            spec.validate()
+        except (TypeError, ValueError) as error:
+            messagebox.showerror("Invalid experiment", str(error), parent=self.experiment_window)
+            return
+        reference = self.experiment_reference.copy()
+        self.experiment_pause_event = Event()
+        self.current_experiment = None
+        self._reset_experiment_branch_table()
+        self._set_experiment_text("CONTROL\n  Running\n\nBIT-0\n  Waiting\n\nBIT-1\n  Waiting\n\nBranch Separation\n  Awaiting completion")
+        self.experiment_status.configure(text=f"Running 3 independent branches for {spec.total_steps:,} steps…")
+
+        def progress(branch: str, data: dict[str, object]) -> None:
+            try:
+                self.root.after(0, lambda: self._update_experiment_branch_progress(branch, data))
+            except tk.TclError:
+                pass
+
+        def worker() -> None:
+            try:
+                run = run_experiment(spec, reference, progress, self.experiment_pause_event)
+                try:
+                    self.root.after(0, lambda: self._finish_experiment_run(run))
+                except tk.TclError:
+                    pass
+            except Exception as error:  # surface worker failures in the UI
+                try:
+                    self.root.after(0, lambda: self._finish_experiment_run(None, error))
+                except tk.TclError:
+                    pass
+
+        self.experiment_thread = Thread(target=worker, name="signal-experiment", daemon=True)
+        self.experiment_thread.start()
+
+    def _update_experiment_branch_progress(self, branch: str, data: dict[str, object]) -> None:
+        if not hasattr(self, "experiment_branch_tree"):
+            return
+        step = int(data.get("step", 0))
+        total = int(data.get("total_steps", 1))
+        self.experiment_branch_tree.item(branch, values=(branch, self.experiment_branch_tree.item(branch, "values")[1], "Running", f"{step:,} / {total:,}", "Measuring"))
+        self.experiment_status.configure(text=f"{branch}: step {step:,} / {total:,} · {float(step / max(total, 1) * 100):.1f}%")
+
+    def _finish_experiment_run(self, run: ExperimentRun | None, error: Exception | None = None) -> None:
+        if error is not None:
+            self.experiment_status.configure(text="Experiment failed")
+            messagebox.showerror("Experiment failed", str(error), parent=self.experiment_window)
+            return
+        if run is None:
+            return
+        self.current_experiment = run
+        for branch in BRANCH_NAMES:
+            result = run.branches[branch]
+            outcome = str(run.summary.get("outcome_classification", "Complete")) if branch != "CONTROL" else "Reference"
+            self.experiment_branch_tree.item(branch, values=(branch, "none" if branch == "CONTROL" else f"impulse {run.spec.bit0_angle if branch == 'BIT-0' else run.spec.bit1_angle:+.0f}°", "Complete", f"{result.final_step - run.reference.step:,}", outcome))
+        self._display_experiment_results(run)
+        self._draw_experiment_canvas()
+        try:
+            destination = save_experiment(run)
+            self.experiment_status.configure(text=f"Complete. Saved immutable record to {destination}")
+        except FileExistsError as error:
+            self.experiment_status.configure(text=f"Complete. Existing record preserved ({error})")
+        except OSError as error:
+            self.experiment_status.configure(text=f"Complete. Save pending: {error}")
+
+    def _display_experiment_results(self, run: ExperimentRun) -> None:
+        lines: list[str] = []
+        for branch in BRANCH_NAMES:
+            result = run.branches[branch]
+            lines.extend((branch, f"  Step: {result.final_step - run.reference.step:,}", f"  Avg speed: {result.average_speed:.4f}", f"  Clusters: {result.cluster_count}", f"  Target integrity: {result.target_integrity:.3f}", f"  Largest response zone: {result.largest_response_zone}", f"  Structure Score: {result.structure_score:.4f}", f"  Network Score: {result.network_score if result.network_score is not None else '—'}", ""))
+        summary = run.summary
+        lines.extend(("Branch Separation", f"  Max separation: {summary.get('bit0_vs_bit1_maximum_separation', {}).get('distance', 0.0):.6f}", f"  First divergence: {summary.get('time_of_first_detectable_divergence', '—')}", f"  Response duration: {summary.get('response_duration', 0)}", f"  Repeatability: {summary.get('repeatability', 'NOT_RUN')}", f"  Control deviation: {summary.get('control_deviation', 0.0):.6f}", f"  Outcome: {summary.get('outcome_classification', '—')}"))
+        self._set_experiment_text("\n".join(lines))
+        self.experiment_summary_label.configure(text=f"{run.spec.experiment_id} complete\n{run.spec.name}\nThree branches measured through step {run.spec.total_steps:,}.")
+
+    def _pause_experiment(self) -> None:
+        if self.experiment_pause_event is None or self.experiment_thread is None or not self.experiment_thread.is_alive():
+            return
+        if self.experiment_pause_event.is_set():
+            self.experiment_pause_event.clear()
+            self.experiment_status.configure(text="Experiment resumed")
+        else:
+            self.experiment_pause_event.set()
+            self.experiment_status.configure(text="Experiment paused safely between simulation intervals")
+
+    def _reset_experiment(self) -> None:
+        if self.experiment_thread is not None and self.experiment_thread.is_alive():
+            messagebox.showinfo("Experiment running", "Pause the experiment and wait for the current branch to finish before resetting.", parent=self.experiment_window)
+            return
+        self.current_experiment = None
+        self._reset_experiment_branch_table()
+        self._set_experiment_text("CONTROL\n  Ready\n\nBIT-0\n  Ready\n\nBIT-1\n  Ready\n\nBranch Separation\n  Awaiting run")
+        self.experiment_summary_label.configure(text="Experiment reset; immutable reference retained")
+        self.experiment_status.configure(text="Ready to run from the captured reference")
+        self._draw_experiment_canvas()
+
+    def _run_repeatability(self) -> None:
+        if self.current_experiment is None or self.experiment_reference is None:
+            messagebox.showinfo("Repeatability", "Run the controlled experiment before testing repeatability.", parent=self.experiment_window)
+            return
+        if self.experiment_repeat_thread is not None and self.experiment_repeat_thread.is_alive():
+            return
+        spec = self.current_experiment.spec
+        reference = self.experiment_reference.copy()
+        self.experiment_status.configure(text=f"Repeatability test running: {spec.repeat_trials} noisy trials…")
+
+        def worker() -> None:
+            from signal_lab.experiment.protocol import run_repeatability_test
+            try:
+                result = run_repeatability_test(spec, reference, lambda trial, total: self.root.after(0, lambda: self.experiment_status.configure(text=f"Repeatability trial {trial} / {total}")))
+                self.root.after(0, lambda: self._finish_repeatability(result))
+            except Exception as error:
+                self.root.after(0, lambda: messagebox.showerror("Repeatability failed", str(error), parent=self.experiment_window))
+
+        self.experiment_repeat_thread = Thread(target=worker, name="signal-repeatability", daemon=True)
+        self.experiment_repeat_thread.start()
+
+    def _finish_repeatability(self, result: dict[str, object]) -> None:
+        if self.current_experiment is not None:
+            self.current_experiment.summary["repeatability"] = result
+            self.current_experiment.summary["repeatability_label"] = "Repeatability"
+        self.experiment_status.configure(text=f"Repeatability complete: {result.get('successful_trials', 0)} / {result.get('trials', 0)} responsive trials")
+        self.experiment_summary_label.configure(text=f"Repeatability: {result.get('success_rate', 0.0):.1%} responsive across {result.get('trials', 0)} trials")
+
+    def _draw_experiment_canvas(self) -> None:
+        if not hasattr(self, "experiment_canvas"):
+            return
+        canvas = self.experiment_canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 2)
+        height = max(canvas.winfo_height(), 2)
+        reference = self.experiment_reference
+        if reference is None:
+            canvas.create_text(width / 2, height / 2, text="Capture a reference state", fill=self.MUTED, font=("Segoe UI", 13))
+            return
+        world_width = reference.simulation_config.width
+        world_height = reference.simulation_config.height
+        target = self.current_experiment.target_center if self.current_experiment is not None else np.asarray([world_width / 2, world_height / 2], dtype=float)
+        try:
+            canvas_spec = self._experiment_spec()
+        except (TypeError, ValueError):
+            canvas_spec = ExperimentSpec(target_radius=reference.genome.interaction_radius * 0.5, total_steps=3000, injection_step=0)
+        radius = canvas_spec.target_radius
+
+        def point(x: float, y: float, x0: float = 0.0, w: float = width) -> tuple[float, float]:
+            return x0 + (x % world_width) / world_width * w, (y % world_height) / world_height * height
+
+        def draw_target(x0: float = 0.0, w: float = width) -> None:
+            tx, ty = point(float(target[0]), float(target[1]), x0, w)
+            for multiple, color in ((5.0, "#203a4c"), (4.0, "#23495c"), (3.0, "#276078"), (2.0, "#2f7b96")):
+                rx = multiple * radius / world_width * w
+                ry = multiple * radius / world_height * height
+                canvas.create_oval(tx - rx, ty - ry, tx + rx, ty + ry, outline=color, dash=(3, 5))
+            canvas.create_oval(tx - 4, ty - 4, tx + 4, ty + 4, outline="#ffffff", width=2)
+
+        run = self.current_experiment
+        selector = self.experiment_branch_selector.get()
+        if run is None:
+            states = [("REFERENCE", reference.state)]
+        elif selector == "SIDE-BY-SIDE":
+            for index, branch in enumerate(BRANCH_NAMES):
+                x0 = index * width / 3
+                panel_width = width / 3
+                canvas.create_line(x0, 0, x0, height, fill="#233947") if index else None
+                canvas.create_text(x0 + 8, 8, text=branch, anchor="nw", fill=self.COLORS[index], font=("Segoe UI", 9, "bold"))
+                state = run.branches[branch].final_state
+                for x, y, species in zip(state.positions[:, 0], state.positions[:, 1], state.species):
+                    px, py = point(float(x), float(y), x0, panel_width)
+                    color = self.COLORS[int(species) % len(self.COLORS)]
+                    canvas.create_oval(px - 2, py - 2, px + 2, py + 2, fill=color, outline="")
+                draw_target(x0, panel_width)
+            canvas.create_line(2 * width / 3, 0, 2 * width / 3, height, fill="#233947")
+        elif selector == "DIFFERENCE MODE":
+            first = run.branches["BIT-0"].final_state
+            second = run.branches["BIT-1"].final_state
+            index_second = {int(pid): index for index, pid in enumerate(second.ids)}
+            for index, pid in enumerate(first.ids[:350]):
+                other = index_second.get(int(pid))
+                if other is None:
+                    continue
+                x1, y1 = point(*first.positions[index])
+                x2, y2 = point(*second.positions[other])
+                canvas.create_line(x1, y1, x2, y2, fill="#f05d5e", width=1)
+                canvas.create_oval(x1 - 2, y1 - 2, x1 + 2, y1 + 2, fill="#3b9cff", outline="")
+                canvas.create_oval(x2 - 2, y2 - 2, x2 + 2, y2 + 2, fill="#ffad3d", outline="")
+            draw_target()
+        else:
+            branch = selector if selector in BRANCH_NAMES else "CONTROL"
+            state = run.branches[branch].final_state if run is not None else reference.state
+            color = self.COLORS[BRANCH_NAMES.index(branch)] if branch in BRANCH_NAMES else self.COLORS[0]
+            for x, y, species in zip(state.positions[:, 0], state.positions[:, 1], state.species):
+                px, py = point(float(x), float(y))
+                particle_color = self.COLORS[int(species) % len(self.COLORS)]
+                canvas.create_oval(px - 2, py - 2, px + 2, py + 2, fill=particle_color, outline="")
+            draw_target()
+            canvas.create_text(8, 8, text=branch, anchor="nw", fill=color, font=("Segoe UI", 9, "bold"))
+        current_step = reference.step if run is None else max(branch.final_step for branch in run.branches.values())
+        self.experiment_timeline.configure(text=f"Reference {reference.step:,}  ───  Injection +{canvas_spec.injection_step:,}  ───  Current {current_step - reference.step:,}  ───  End +{canvas_spec.total_steps:,}")
 
     def _open_search_window(self) -> None:
         if getattr(self, "search_window", None) is not None and self.search_window.winfo_exists():
