@@ -1,45 +1,449 @@
 STRUCTURE DETECTOR VALIDATION
 
-Compact moving blob:
+A. Compact translating blob: PASS
   Cohesion         0.90 PASS
   Structure        0.37 PASS
   Detail           compact local graph
+  Expected         detected with high cohesion and coherent translation
+  Actual           detected; cohesion remains high
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               0
+    age_steps                    0
+    particle_count               40
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   100.0
+    centroid_y                   100.0
+    mean_velocity_x              0.34999999999999976
+    mean_velocity_y              0.0
+    radius                       8.000000000000007
+    tracker_persistence_score    0.0
+    persistence_score            0.0
+    cohesion_score               0.8950886765894837
+    identity_score               0.0
+    shape_score                  0.75
+    dynamic_score                0.0
+    lifetime_score               0.0
+    structure_score              0.37377216914737094
+    membership_stability         0.0
+    size_stability               0.0
+    species_stability            0.0
+    shape_stability              0.0
+    motion_coherence             0.9999999999999993
+    mean_neighbor_distance       6.5293895962059505
+    neighbor_distance_std        3.232237799023983
+    local_neighbor_count_mean    20.0
+    local_neighbor_count_std     0.0
+    cluster_density              0.1989436788648692
+    radius_of_gyration           8.0
+    diameter                     16.000000000000007
+    compactness                  0.7071067811865472
+    average_degree               20.0
+    degree_variance              0.0
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   400
+    articulation_point_count     0
+    articulation_point_fraction  0.0
+    graph_diameter               2
+    clustering_coefficient       0.7105263157894737
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0
+    internal_motion              2.220446049250313e-16
+    internal_motion_std          0.0
+    rg_cv                        0.0
+    density_cv                   0.0
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.0
+    classification               TRANSIENT
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Bridged blobs:
+B. Two blobs with sparse bridge: PASS
   Structure        0.33 PASS
   Bridge Fraction  0.10
   Compactness      0.55
   Detail           sparse bridge is penalized
+  Expected         detected, with bridge fraction and structure score penalizing the weak connection
+  Actual           bridge penalty observed
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               0
+    age_steps                    0
+    particle_count               41
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   99.27617813232081
+    centroid_y                   100.0
+    mean_velocity_x              0.20000000000000007
+    mean_velocity_y              0.0
+    radius                       38.72382186767919
+    tracker_persistence_score    0.0
+    persistence_score            0.0
+    cohesion_score               0.7356925299163408
+    identity_score               0.0
+    shape_score                  0.75
+    dynamic_score                0.0
+    lifetime_score               0.0
+    structure_score              0.3339231324790852
+    membership_stability         0.0
+    size_stability               0.0
+    species_stability            0.0
+    shape_stability              0.0
+    motion_coherence             1.0000000000000004
+    mean_neighbor_distance       6.794951202908545
+    neighbor_distance_std        2.844308849671763
+    local_neighbor_count_mean    8.048780487804878
+    local_neighbor_count_std     1.6520677289635222
+    cluster_density              0.015035996829328737
+    radius_of_gyration           29.46123031856885
+    diameter                     76.0
+    compactness                  0.5482167300094407
+    average_degree               8.048780487804878
+    degree_variance              2.7293277810826897
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   165
+    articulation_point_count     4
+    articulation_point_fraction  0.0975609756097561
+    graph_diameter               9
+    clustering_coefficient       0.605652342237708
+    number_of_dense_regions      2
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0975609756097561
+    internal_motion              5.551115123125783e-17
+    internal_motion_std          0.0
+    rg_cv                        0.0
+    density_cv                   0.0
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.0
+    classification               TRANSIENT
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Uniform random cloud:
-  Structure        0.32 PASS
+C. Uniform random cloud: PASS
+  Structure        0.31 PASS
   Detail           no persistent cohesive component
+  Expected         no primary-quality cohesive structure
+  Actual           low structure score / no qualifying cohesive component
+  Raw metrics
+    cluster_id                   3
+    birth_step                   0
+    last_seen_step               0
+    age_steps                    0
+    particle_count               14
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   121.23513348833927
+    centroid_y                   77.21417735518466
+    mean_velocity_x              0.0
+    mean_velocity_y              0.0
+    radius                       22.815373193729133
+    tracker_persistence_score    0.0
+    persistence_score            0.0
+    cohesion_score               0.6582821159754896
+    identity_score               0.0
+    shape_score                  0.75
+    dynamic_score                0.0
+    lifetime_score               0.0
+    structure_score              0.3145705289938724
+    membership_stability         0.0
+    size_stability               0.0
+    species_stability            0.0
+    shape_stability              0.0
+    motion_coherence             0.0
+    mean_neighbor_distance       6.511289421618772
+    neighbor_distance_std        2.485710210611652
+    local_neighbor_count_mean    4.714285714285714
+    local_neighbor_count_std     1.3850513878332367
+    cluster_density              0.02417955595660362
+    radius_of_gyration           13.575784047903559
+    diameter                     42.34017180524243
+    compactness                  0.45344780386593425
+    average_degree               4.714285714285714
+    degree_variance              1.9183673469387752
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   33
+    articulation_point_count     2
+    articulation_point_fraction  0.14285714285714285
+    graph_diameter               5
+    clustering_coefficient       0.680952380952381
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.14285714285714285
+    internal_motion              0.0
+    internal_motion_std          0.0
+    rg_cv                        0.0
+    density_cv                   0.0
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.0
+    classification               TRANSIENT
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Expanding cloud:
+D. Expanding cloud: PASS
   Structure        0.55 PASS
   Rg CV            0.35
   Shape            0.27
   Detail           growing Rg lowers temporal shape score
+  Expected         temporal shape instability lowers the score
+  Actual           shape instability observed
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               300
+    age_steps                    300
+    particle_count               40
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   106.0
+    centroid_y                   100.0
+    mean_velocity_x              0.2000000000000001
+    mean_velocity_y              0.0
+    radius                       14.000000000000004
+    tracker_persistence_score    1.0
+    persistence_score            1.0
+    cohesion_score               0.895490271314623
+    identity_score               1.0
+    shape_score                  0.2663318758567608
+    dynamic_score                0.0
+    lifetime_score               0.15
+    structure_score              0.5496389430000078
+    membership_stability         1.0
+    size_stability               1.0
+    species_stability            1.0
+    shape_stability              0.6268071370036791
+    motion_coherence             1.0000000000000004
+    mean_neighbor_distance       6.496220367638503
+    neighbor_distance_std        3.0137200690327206
+    local_neighbor_count_mean    10.0
+    local_neighbor_count_std     0.0
+    cluster_density              0.06496120126199811
+    radius_of_gyration           13.999999999999998
+    diameter                     28.000000000000004
+    compactness                  0.7071067811865475
+    average_degree               10.0
+    degree_variance              0.0
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   200
+    articulation_point_count     0
+    articulation_point_fraction  0.0
+    graph_diameter               4
+    clustering_coefficient       0.6666666666666666
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0
+    internal_motion              8.326672684688674e-17
+    internal_motion_std          0.0
+    rg_cv                        0.3530633648683877
+    density_cv                   0.7931126920247658
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.5656153673558176
+    classification               SHORT_LIVED
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Frozen crystal:
+E. Stationary crystal (Frozen crystal): PASS
   Cohesion         0.80 PASS
   Dynamics         0.00 PASS
   Detail           cohesive but frozen
+  Expected         high cohesion with low dynamics
+  Actual           cohesive and low-dynamics as expected
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               0
+    age_steps                    0
+    particle_count               36
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   90.0
+    centroid_y                   90.0
+    mean_velocity_x              0.0
+    mean_velocity_y              0.0
+    radius                       28.284271247461902
+    tracker_persistence_score    0.0
+    persistence_score            0.0
+    cohesion_score               0.7990003330488487
+    identity_score               0.0
+    shape_score                  0.75
+    dynamic_score                0.0
+    lifetime_score               0.0
+    structure_score              0.3497500832622122
+    membership_stability         0.0
+    size_stability               0.0
+    species_stability            0.0
+    shape_stability              0.0
+    motion_coherence             0.0
+    mean_neighbor_distance       9.506231135902166
+    neighbor_distance_std        1.6499935399004892
+    local_neighbor_count_mean    6.111111111111111
+    local_neighbor_count_std     1.7916128329552332
+    cluster_density              0.030694167596294102
+    radius_of_gyration           19.32183566158592
+    diameter                     56.568542494923804
+    compactness                  0.483045891539648
+    average_degree               6.111111111111111
+    degree_variance              3.2098765432098766
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   110
+    articulation_point_count     0
+    articulation_point_fraction  0.0
+    graph_diameter               5
+    clustering_coefficient       0.5682539682539685
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0
+    internal_motion              0.0
+    internal_motion_std          0.0
+    rg_cv                        0.0
+    density_cv                   0.0
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.0
+    classification               TRANSIENT
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Dynamic circulation:
+F. Coherent moving structure with internal circulation: PASS
   Structure        0.85 PASS
   Dynamics         1.00 PASS
   Detail           nonzero internal circulation
+  Expected         structure remains cohesive while internal motion is measurable
+  Actual           cohesive high-dynamics structure observed
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               300
+    age_steps                    300
+    particle_count               40
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   100.0
+    centroid_y                   100.0
+    mean_velocity_x              1.8041124150158794e-17
+    mean_velocity_y              -2.2898349882893852e-17
+    radius                       8.000000000000007
+    tracker_persistence_score    1.0
+    persistence_score            1.0
+    cohesion_score               0.8950886765894837
+    identity_score               1.0
+    shape_score                  1.0
+    dynamic_score                1.0
+    lifetime_score               0.15
+    structure_score              0.8462721691473709
+    membership_stability         1.0
+    size_stability               1.0
+    species_stability            1.0
+    shape_stability              1.0
+    motion_coherence             7.287903453501167e-17
+    mean_neighbor_distance       6.5293895962059505
+    neighbor_distance_std        3.232237799023983
+    local_neighbor_count_mean    20.0
+    local_neighbor_count_std     0.0
+    cluster_density              0.1989436788648692
+    radius_of_gyration           8.0
+    diameter                     16.000000000000007
+    compactness                  0.7071067811865472
+    average_degree               20.0
+    degree_variance              0.0
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   400
+    articulation_point_count     0
+    articulation_point_fraction  0.0
+    graph_diameter               2
+    clustering_coefficient       0.7105263157894737
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0
+    internal_motion              0.4
+    internal_motion_std          1.7923312046711426e-16
+    rg_cv                        0.0
+    density_cv                   0.0
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.0
+    classification               SHORT_LIVED
+    macro_cluster                false
+    species_0_fraction           1.0
 
-Two structures crossing:
+G. Two structures crossing: PASS
   Identity         1.00 PASS
   Tracked          2.00
   Detail           particle IDs preserved during a pass
+  Expected         two identities remain separable through the crossing
+  Actual           2 tracked structures; identity=1.00
+  Raw metrics
+    tracked_cluster_count        2
+    identity_score               1.0
 
-Toroidal boundary crossing:
+H. Structure crossing toroidal boundary (Toroidal boundary crossing): PASS
   Identity         1.00 PASS
   Centroid X       1.00
   Rg               5.00
   Detail           minimum-image centroid and identity
+  Expected         identity and compactness survive a world-wrap crossing
+  Actual           centroid_x=1.00; identity=1.00
+  Raw metrics
+    cluster_id                   1
+    birth_step                   0
+    last_seen_step               100
+    age_steps                    100
+    particle_count               20
+    size_class                   SMALL_STRUCTURE
+    centroid_x                   0.9999999999999999
+    centroid_y                   100.0
+    mean_velocity_x              1.0
+    mean_velocity_y              0.0
+    radius                       5.000000000000008
+    tracker_persistence_score    1.0
+    persistence_score            1.0
+    cohesion_score               0.8931898305727036
+    identity_score               1.0
+    shape_score                  0.971175669621133
+    dynamic_score                0.0
+    lifetime_score               0.05
+    structure_score              0.6750325915674025
+    membership_stability         1.0
+    size_stability               1.0
+    species_stability            1.0
+    shape_stability              0.9999999999999997
+    motion_coherence             1.0
+    mean_neighbor_distance       6.687476176934056
+    neighbor_distance_std        2.8123373429067677
+    local_neighbor_count_mean    19.0
+    local_neighbor_count_std     0.0
+    cluster_density              0.2546479089470324
+    radius_of_gyration           5.000000000000002
+    diameter                     10.000000000000007
+    compactness                  0.7071067811865474
+    average_degree               19.0
+    degree_variance              0.0
+    connected_component_count    1
+    largest_component_fraction   1.0
+    edge_count                   190
+    articulation_point_count     0
+    articulation_point_fraction  0.0
+    graph_diameter               1
+    clustering_coefficient       1.0
+    number_of_dense_regions      1
+    graph_neighbor_radius        11.399999999999999
+    bridge_fraction              0.0
+    internal_motion              0.0
+    internal_motion_std          0.0
+    rg_cv                        1.77635683940025e-16
+    density_cv                   3.4467526977680436e-16
+    count_cv                     0.0
+    species_cv                   0.0
+    connectivity_cv              0.05849582172701954
+    classification               SHORT_LIVED
+    macro_cluster                false
+    species_0_fraction           1.0
 
 8/8 VALIDATION TESTS PASSED

@@ -9,6 +9,7 @@ import numpy as np
 
 from signal_lab.physics.particle import ParticleState
 from signal_lab.physics.spatial_hash import SpatialHash
+from signal_lab.experiment.config import StructureDetectionConfig, load_structure_config
 
 
 def toroidal_centroid(positions: np.ndarray, width: float, height: float) -> np.ndarray:
@@ -42,15 +43,26 @@ def membership_overlap(previous_members: Iterable[int], current_members: Iterabl
     return float(len(previous & current) / len(union)) if union else 0.0
 
 
-def lifetime_class(age_steps: int) -> str:
+def lifetime_class(age_steps: int, config: StructureDetectionConfig | None = None) -> str:
     """Return the experimental lifetime label for a cluster age."""
-    if age_steps < 100:
+    config = config or load_structure_config()
+    if age_steps < config.short_lived_min_age_steps:
         return "TRANSIENT"
-    if age_steps < 500:
+    if age_steps < config.persistent_min_age_steps:
         return "SHORT_LIVED"
-    if age_steps < 2000:
+    if age_steps < config.long_lived_min_age_steps:
         return "PERSISTENT"
     return "LONG_LIVED"
+
+
+def cluster_classification(age_steps: int, particle_count: int, config: StructureDetectionConfig | None = None) -> str:
+    """Return the explicit lifetime or macro-cluster classification."""
+    return (config or load_structure_config()).classify(age_steps, particle_count)
+
+
+def size_class(particle_count: int, config: StructureDetectionConfig | None = None) -> str:
+    """Return the explicit provisional particle-count class."""
+    return (config or load_structure_config()).size_class(particle_count)
 
 
 @dataclass
@@ -91,6 +103,7 @@ class ClusterObservation:
     mean_velocity: np.ndarray
     species_distribution: np.ndarray
     radius: float
+    tracker_persistence_score: float = 0.0
     persistence_score: float = 0.0
     membership_stability: float = 0.0
     size_stability: float = 0.0
@@ -109,6 +122,13 @@ class ClusterObservation:
     degree_variance: float = 0.0
     connected_component_count: int = 1
     largest_component_fraction: float = 1.0
+    edge_count: int = 0
+    articulation_point_count: int = 0
+    articulation_point_fraction: float = 0.0
+    graph_diameter: int = 0
+    clustering_coefficient: float = 0.0
+    number_of_dense_regions: int = 0
+    graph_neighbor_radius: float = 0.0
     bridge_fraction: float = 0.0
     internal_motion: float = 0.0
     internal_motion_std: float = 0.0
@@ -134,12 +154,25 @@ class ClusterObservation:
         return len(self.particle_ids)
 
     @property
+    def size_class(self) -> str:
+        return load_structure_config().size_class(self.particle_count)
+
+    @property
+    def size_classification(self) -> str:
+        """Explicit alias used by reports and network analysis."""
+        return self.size_class
+
+    @property
     def classification(self) -> str:
-        return lifetime_class(self.age_steps)
+        return cluster_classification(self.age_steps, self.particle_count)
 
     @property
     def is_macro_cluster(self) -> bool:
-        return self.particle_count > 300
+        return self.classification == "MACRO_CLUSTER"
+
+    @property
+    def is_primary_candidate(self) -> bool:
+        return load_structure_config().is_primary_candidate(self)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,6 +181,7 @@ class ClusterObservation:
             "last_seen_step": self.last_seen_step,
             "age_steps": self.age_steps,
             "particle_count": self.particle_count,
+            "size_class": self.size_class,
             "particle_ids": sorted(self.particle_ids),
             "centroid_x": float(self.centroid[0]),
             "centroid_y": float(self.centroid[1]),
@@ -155,7 +189,8 @@ class ClusterObservation:
             "mean_velocity_y": float(self.mean_velocity[1]),
             "species_distribution": self.species_distribution.tolist(),
             "radius": self.radius,
-            "persistence_score": self.persistence_score,
+            "tracker_persistence_score": self.tracker_persistence_score,
+            "persistence_score": self.tracker_persistence_score,
             "cohesion_score": self.cohesion_score,
             "identity_score": self.identity_score,
             "shape_score": self.shape_score,
@@ -179,6 +214,13 @@ class ClusterObservation:
             "degree_variance": self.degree_variance,
             "connected_component_count": self.connected_component_count,
             "largest_component_fraction": self.largest_component_fraction,
+            "edge_count": self.edge_count,
+            "articulation_point_count": self.articulation_point_count,
+            "articulation_point_fraction": self.articulation_point_fraction,
+            "graph_diameter": self.graph_diameter,
+            "clustering_coefficient": self.clustering_coefficient,
+            "number_of_dense_regions": self.number_of_dense_regions,
+            "graph_neighbor_radius": self.graph_neighbor_radius,
             "bridge_fraction": self.bridge_fraction,
             "internal_motion": self.internal_motion,
             "internal_motion_std": self.internal_motion_std,
@@ -202,11 +244,14 @@ class TrackingResult:
 class ClusterDetector:
     """Detect proximity components and calculate cohesion/connectivity metrics."""
 
-    def __init__(self, width: float, height: float, link_radius: float, min_cluster_size: int = 5) -> None:
+    def __init__(self, width: float, height: float, link_radius: float, min_cluster_size: int = 5, graph_neighbor_radius: float | None = None, dense_min_degree: int | None = None) -> None:
         self.width = float(width)
         self.height = float(height)
         self.link_radius = float(link_radius)
         self.min_cluster_size = int(min_cluster_size)
+        detector_config = load_structure_config()
+        self.graph_neighbor_radius = float(graph_neighbor_radius or link_radius * detector_config.graph_neighbor_radius_ratio)
+        self.dense_min_degree = int(dense_min_degree if dense_min_degree is not None else detector_config.network_min_node_degree)
         self.spatial_hash = SpatialHash(width, height, link_radius)
 
     def detect(self, state: ParticleState) -> list[ClusterObservation]:
@@ -241,7 +286,7 @@ class ClusterDetector:
             radius_of_gyration = float(np.sqrt(np.mean(distances * distances)))
             radius = float(np.max(distances))
             diameter = _estimate_diameter(positions, self.width, self.height)
-            graph = _build_local_graph(indices, state.positions, self.width, self.height, self.link_radius)
+            graph = _build_local_graph(indices, state.positions, self.width, self.height, self.graph_neighbor_radius)
             edge_distances = []
             degrees = np.zeros(len(indices), dtype=np.float64)
             index_lookup = {int(index): offset for offset, index in enumerate(indices)}
@@ -258,6 +303,10 @@ class ClusterDetector:
             articulation = _articulation_points(graph)
             largest_fraction = max(components, default=0) / max(len(indices), 1)
             bridge_fraction = len(articulation) / max(len(indices), 1)
+            edge_count = int(sum(len(neighbors) for neighbors in graph.values()) // 2)
+            graph_diameter = _graph_diameter(graph)
+            clustering_coefficient = _clustering_coefficient(graph)
+            dense_regions = _dense_region_count(graph, self.dense_min_degree)
             cluster_density = len(indices) / max(np.pi * max(radius_of_gyration, self.link_radius * 0.05) ** 2, 1e-12)
             compactness = min(1.0, max(0.0, np.sqrt(2.0) * radius_of_gyration / max(diameter, 1e-12)))
             speed = np.linalg.norm(velocities, axis=1)
@@ -272,19 +321,20 @@ class ClusterDetector:
             species_distribution /= max(float(len(indices)), 1.0)
             cohesion_score = _cohesion_score(mean_neighbor_distance, degrees, compactness, largest_fraction, bridge_fraction, self.link_radius, len(components))
             dynamic_score = _dynamic_score(internal_motion, internal_motion_std, self.link_radius)
-            detected.append(ClusterObservation(0, 0, 0, frozenset(int(value) for value in state.ids[indices]), centroid, np.mean(velocities, axis=0), species_distribution, radius, motion_coherence=motion_coherence, mean_neighbor_distance=mean_neighbor_distance, neighbor_distance_std=neighbor_distance_std, local_neighbor_count_mean=float(np.mean(degrees)), local_neighbor_count_std=float(np.std(degrees)), cluster_density=cluster_density, radius_of_gyration=radius_of_gyration, diameter=diameter, compactness=compactness, average_degree=float(np.mean(degrees)), degree_variance=float(np.var(degrees)), connected_component_count=len(components), largest_component_fraction=largest_fraction, bridge_fraction=bridge_fraction, internal_motion=internal_motion, internal_motion_std=internal_motion_std, cohesion_score=cohesion_score, dynamic_score=dynamic_score))
+            detected.append(ClusterObservation(0, 0, 0, frozenset(int(value) for value in state.ids[indices]), centroid, np.mean(velocities, axis=0), species_distribution, radius, motion_coherence=motion_coherence, mean_neighbor_distance=mean_neighbor_distance, neighbor_distance_std=neighbor_distance_std, local_neighbor_count_mean=float(np.mean(degrees)), local_neighbor_count_std=float(np.std(degrees)), cluster_density=cluster_density, radius_of_gyration=radius_of_gyration, diameter=diameter, compactness=compactness, average_degree=float(np.mean(degrees)), degree_variance=float(np.var(degrees)), connected_component_count=len(components), largest_component_fraction=largest_fraction, edge_count=edge_count, articulation_point_count=len(articulation), articulation_point_fraction=bridge_fraction, graph_diameter=graph_diameter, clustering_coefficient=clustering_coefficient, number_of_dense_regions=dense_regions, graph_neighbor_radius=self.graph_neighbor_radius, bridge_fraction=bridge_fraction, internal_motion=internal_motion, internal_motion_std=internal_motion_std, cohesion_score=cohesion_score, dynamic_score=dynamic_score))
         return detected
 
 
 class ClusterTracker:
     """Associate observations across frames and score temporal stability."""
 
-    def __init__(self, width: float, height: float, link_radius: float, min_cluster_size: int = 5, minimum_overlap: float = 0.40) -> None:
+    def __init__(self, width: float, height: float, link_radius: float, min_cluster_size: int = 5, minimum_overlap: float = 0.40, structure_config: StructureDetectionConfig | None = None) -> None:
         self.width = float(width)
         self.height = float(height)
         self.link_radius = float(link_radius)
         self.minimum_overlap = float(minimum_overlap)
-        self.detector = ClusterDetector(width, height, link_radius, min_cluster_size)
+        self.structure_config = structure_config or load_structure_config()
+        self.detector = ClusterDetector(width, height, link_radius, min_cluster_size, link_radius * self.structure_config.graph_neighbor_radius_ratio, self.structure_config.network_min_node_degree)
         self.active: dict[int, ClusterObservation] = {}
         self.completed: dict[int, ClusterObservation] = {}
         self.next_cluster_id = 1
@@ -353,10 +403,11 @@ class ClusterTracker:
         raw.birth_step = step
         raw.last_seen_step = step
         raw.identity_score = 0.0
+        raw.tracker_persistence_score = 0.0
         raw.lifetime_score = 0.0
         raw.shape_score = _shape_score(raw)
         raw.structure_score = _structure_score(raw)
-        raw.persistence_score = raw.structure_score
+        raw.persistence_score = raw.tracker_persistence_score
         raw.history = [_history_point(raw, step)]
         return raw
 
@@ -379,13 +430,14 @@ class ClusterTracker:
         raw.species_cv = _species_cv(prior.history, raw.species_distribution)
         raw.connectivity_cv = _coefficient_of_variation(prior.history, "average_degree", raw.average_degree)
         raw.identity_score = _running_average(prior.identity_score, overlap, prior.age_steps)
+        raw.tracker_persistence_score = _running_average(prior.tracker_persistence_score, overlap, prior.age_steps)
         raw.history = prior.history
         raw.shape_score = _shape_score(raw)
         raw.lifetime_score = min(1.0, (step - prior.birth_step) / 2000.0)
         raw.cohesion_score = _cohesion_score(raw.mean_neighbor_distance, np.asarray([raw.local_neighbor_count_mean]), raw.compactness, raw.largest_component_fraction, raw.bridge_fraction, self.link_radius, raw.connected_component_count)
         raw.dynamic_score = _dynamic_score(raw.internal_motion, raw.internal_motion_std, self.link_radius)
         raw.structure_score = _structure_score(raw)
-        raw.persistence_score = raw.structure_score
+        raw.persistence_score = raw.tracker_persistence_score
         raw.history = prior.history + [_history_point(raw, step)]
         return raw
 
@@ -478,6 +530,58 @@ def _articulation_points(graph: dict[int, set[int]]) -> set[int]:
             parent[root] = None
             visit(root)
     return articulation
+
+
+def _shortest_path_metrics(graph: dict[int, set[int]]) -> tuple[int, float]:
+    """Return graph diameter and mean finite shortest-path length."""
+    diameter = 0
+    path_lengths: list[int] = []
+    for source in sorted(graph):
+        distances = {source: 0}
+        queue = [source]
+        for node in queue:
+            for neighbor in sorted(graph[node]):
+                if neighbor not in distances:
+                    distances[neighbor] = distances[node] + 1
+                    queue.append(neighbor)
+        for target, distance in distances.items():
+            if target > source:
+                path_lengths.append(distance)
+                diameter = max(diameter, distance)
+    return diameter, float(np.mean(path_lengths)) if path_lengths else 0.0
+
+
+def _graph_diameter(graph: dict[int, set[int]]) -> int:
+    return _shortest_path_metrics(graph)[0]
+
+
+def _clustering_coefficient(graph: dict[int, set[int]]) -> float:
+    coefficients: list[float] = []
+    for node, neighbors in graph.items():
+        degree = len(neighbors)
+        if degree < 2:
+            coefficients.append(0.0)
+            continue
+        links = sum(1 for first in neighbors for second in neighbors if first < second and second in graph[first])
+        coefficients.append(2.0 * links / (degree * (degree - 1)))
+    return float(np.mean(coefficients)) if coefficients else 0.0
+
+
+def _dense_region_count(graph: dict[int, set[int]], minimum_degree: int) -> int:
+    dense = {node for node, neighbors in graph.items() if len(neighbors) >= minimum_degree}
+    remaining = set(dense)
+    count = 0
+    while remaining:
+        root = min(remaining)
+        remaining.remove(root)
+        queue = [root]
+        while queue:
+            for neighbor in graph[queue.pop()]:
+                if neighbor in remaining and neighbor in dense:
+                    remaining.remove(neighbor)
+                    queue.append(neighbor)
+        count += 1
+    return count
 
 
 def _cohesion_score(mean_distance: float, degrees: np.ndarray, compactness: float, largest_fraction: float, bridge_fraction: float, link_radius: float, component_count: int) -> float:

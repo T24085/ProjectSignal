@@ -10,8 +10,9 @@ set PARTICLES=1000
 rem Exploratory searches can use a larger interval; keep 10 for final measurements.
 set OBSERVATION_INTERVAL=10
 
-echo Project SIGNAL Phase 2B structure search
+echo Project SIGNAL Experiment 001 baseline search
 echo Genomes: %RUNS%  Steps per genome: %STEPS_PER_RUN%  Particles: %PARTICLES%
+echo Existing completed genomes are resumed; Experiment 001 is never overwritten.
 echo.
 
 py -3 -m signal_lab.cli.search --runs %RUNS% --steps %STEPS_PER_RUN% --particles %PARTICLES% --observation-interval %OBSERVATION_INTERVAL% %*

@@ -22,4 +22,39 @@ target_fps = 60
 observation_interval = 10
 minimum_cluster_size = 20
 minimum_membership_overlap = 0.40
-persistence_threshold = 0.55
+tracker_persistence_threshold = 0.55
+
+[structure_detection.classifications]
+transient_max_age_steps = 99
+short_lived_min_age_steps = 100
+persistent_min_age_steps = 500
+long_lived_min_age_steps = 2000
+macro_cluster_particle_count = 300
+
+[structure_detection.size_classes]
+micro_cluster_max_particle_count = 9
+small_structure_max_particle_count = 49
+medium_structure_max_particle_count = 149
+large_structure_max_particle_count = 300
+
+[structure_detection.network]
+graph_neighbor_radius_ratio = 0.95
+min_node_particle_count = 8
+min_node_degree = 4
+min_node_age_steps = 100
+min_edge_age_steps = 100
+min_persistent_nodes = 3
+min_persistent_edges = 2
+candidate_min_age_steps = 500
+candidate_min_score = 0.65
+
+[structure_detection.primary_candidate]
+min_particle_count = 20
+max_particle_count = 300
+min_age_steps = 500
+min_structure_score = 0.70
+min_cohesion = 0.60
+min_identity = 0.70
+min_shape = 0.50
+min_dynamics = 0.20
+max_bridge_fraction = 0.20

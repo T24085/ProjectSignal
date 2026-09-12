@@ -7,19 +7,36 @@ import csv
 import json
 import math
 from threading import Event, Thread
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
+import webbrowser
 
 import numpy as np
 
 from signal_lab.experiment.clustering import ClusterObservation, ClusterTracker, lifetime_class
+from signal_lab.experiment.networks import NetworkObservation, NetworkTracker
+from signal_lab.experiment.protocol import (
+    BRANCH_NAMES,
+    ExperimentRun,
+    ExperimentSpec,
+    MeasurementZone,
+    ReferenceState,
+    capture_reference,
+    discover_targets,
+    load_experiment,
+    run_experiment,
+    save_experiment,
+)
 from signal_lab.physics.engine import SimulationConfig, SimulationEngine
 from signal_lab.physics.genome import Genome
 from signal_lab.physics.particle import ParticleState
 from signal_lab.storage.replay import save_structure_snapshot
 from signal_lab.storage.replay import load_structure_snapshot
-from signal_lab.search.runner import SearchConfig, run_search
+from signal_lab.storage.export import collect_export_data, export_all
+from signal_lab.search.runner import SearchConfig, load_baseline_rows, run_search
+from signal_lab.ui.three_viewer import ThreeViewerServer
 
 
 class SimulatorView:
@@ -46,10 +63,14 @@ class SimulatorView:
 
         self.engine = SimulationEngine(config=SimulationConfig(particle_count=particle_count, seed=seed))
         self.cluster_tracker = ClusterTracker(self.engine.config.width, self.engine.config.height, self.engine.genome.interaction_radius, min_cluster_size=5)
+        self.network_tracker = NetworkTracker(self.engine.config.width, self.engine.config.height, self.engine.genome.interaction_radius)
         self.current_clusters: list[ClusterObservation] = []
+        self.current_networks: list[NetworkObservation] = []
+        self.saved_network_ids: set[int] = set()
         self.selected_cluster_id: int | None = None
         self.next_cluster_observation_step = 0
         self.running = False
+        self.fullscreen_view = False
         self.show_trails = tk.BooleanVar(value=True)
         self.show_clusters = tk.BooleanVar(value=True)
         self.show_radius = tk.BooleanVar(value=False)
@@ -73,9 +94,17 @@ class SimulatorView:
         self.last_metrics_step = -1
         self.search_thread: Thread | None = None
         self.search_stop_event: Event | None = None
+        self.three_viewer: ThreeViewerServer | None = None
+        self.experiment_window: tk.Toplevel | None = None
+        self.experiment_thread: Thread | None = None
+        self.experiment_pause_event: Event | None = None
+        self.experiment_reference: ReferenceState | None = None
+        self.current_experiment: ExperimentRun | None = None
         self._configure_styles()
         self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        self.root.bind("<F11>", lambda _event: self.toggle_fullscreen_simulation())
+        self.root.bind("<Escape>", lambda _event: self.exit_fullscreen_simulation())
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._log("System ready")
         self._refresh_metrics()
         self._draw()
@@ -145,13 +174,36 @@ class SimulatorView:
 
         left = ttk.Frame(workspace, style="Dashboard.TFrame")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.rowconfigure(1, weight=1)
-        control_panel = self._panel(left, "Simulation Control")
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+        left_canvas = tk.Canvas(left, background=self.BG, highlightthickness=0, borderwidth=0)
+        left_canvas.grid(row=0, column=0, sticky="nsew")
+        left_scrollbar = ttk.Scrollbar(left, orient="vertical", command=left_canvas.yview)
+        left_scrollbar.grid(row=0, column=1, sticky="ns")
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_body = ttk.Frame(left_canvas, style="Dashboard.TFrame")
+        left_body.columnconfigure(0, weight=1)
+        left_window = left_canvas.create_window((0, 0), window=left_body, anchor="nw")
+        left_body.bind("<Configure>", lambda _event: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda event: left_canvas.itemconfigure(left_window, width=event.width))
+
+        def scroll_left(event: tk.Event) -> None:
+            if event.delta:
+                left_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        left_canvas.bind("<Enter>", lambda _event: left_canvas.bind_all("<MouseWheel>", scroll_left))
+        left_canvas.bind("<Leave>", lambda _event: left_canvas.unbind_all("<MouseWheel>"))
+        self.left_canvas = left_canvas
+        self.left_body = left_body
+        control_panel = self._panel(left_body, "Simulation Control")
         control_panel.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         for text, command, style in (("▶   Start", self.start, "Primary.TButton"), ("Ⅱ   Pause", self.pause, "Dash.TButton"), ("▶|  Step (1 frame)", lambda: self._advance(1), "Dash.TButton"), ("↻   Reset", self.reset, "Dash.TButton"), ("⚄   Random Genome", self.randomize_genome, "Dash.TButton"), ("▣   Load Genome", self.load_genome, "Dash.TButton"), ("▤   Save Genome", self.save_genome, "Dash.TButton"), ("⚙   Change Seed", self.apply_seed, "Dash.TButton")):
             ttk.Button(control_panel, text=text, command=command, style=style).pack(fill=tk.X, pady=2)
+        ttk.Button(control_panel, text="⛶   Fullscreen Simulation", command=self.toggle_fullscreen_simulation, style="Dash.TButton").pack(fill=tk.X, pady=(7, 2))
+        ttk.Button(control_panel, text="✦   Three.js Particle View", command=self.open_three_view, style="Dash.TButton").pack(fill=tk.X, pady=(2, 2))
+        ttk.Button(control_panel, text="⇩   Export Results...", command=self._export_results_dialog, style="Dash.TButton").pack(fill=tk.X, pady=(2, 2))
 
-        lower_left = ttk.Frame(left, style="Dashboard.TFrame")
+        lower_left = ttk.Frame(left_body, style="Dashboard.TFrame")
         lower_left.grid(row=1, column=0, sticky="nsew")
         lower_left.rowconfigure(1, weight=1)
         parameters = self._panel(lower_left, "Simulation Parameters")
@@ -167,11 +219,15 @@ class SimulatorView:
         center.rowconfigure(0, weight=1)
         center.columnconfigure(0, weight=1)
         view_panel = self._panel(center, "Simulation View")
+        self.view_panel = view_panel
         view_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
         view_panel.rowconfigure(1, weight=1)
         view_panel.columnconfigure(0, weight=1)
         self.view_title = view_panel.winfo_children()[0]
-        self.canvas = tk.Canvas(view_panel, background="#000306", highlightthickness=1, highlightbackground=self.BORDER)
+        # The panel helper creates an expandable body frame. Keep the canvas
+        # inside that body so the body does not consume height above it.
+        view_body = self._body(view_panel)
+        self.canvas = tk.Canvas(view_body, background="#000306", highlightthickness=1, highlightbackground=self.BORDER)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self._draw())
         self.canvas.bind("<Button-1>", self._select_cluster_from_canvas)
@@ -194,6 +250,14 @@ class SimulatorView:
         self._build_cluster_panel(bottom)
         self._build_event_panel(bottom)
         self._build_footer(root)
+        self.dashboard_root = root
+        self.header = header
+        self.nav = nav
+        self.workspace = workspace
+        self.left = left
+        self.center = center
+        self.right = right
+        self.bottom = bottom
 
     def _build_sliders(self, panel: ttk.Frame) -> None:
         body = self._body(panel)
@@ -277,6 +341,7 @@ class SimulatorView:
 
     def _build_time_series(self, parent: ttk.Frame) -> None:
         panel = self._panel(parent, "Time Series (Last 1,000 steps)")
+        self.time_series_panel = panel
         panel.grid(row=1, column=0, sticky="ew")
         body = self._body(panel)
         tabs = ttk.Frame(body, style="Panel.TFrame")
@@ -289,6 +354,10 @@ class SimulatorView:
 
     def _build_cluster_panel(self, parent: ttk.Frame) -> None:
         panel = self._panel(parent, "Cluster Analysis")
+        self.cluster_panel = panel
+        self.cluster_panel_collapsed = False
+        self.cluster_panel_toggle = ttk.Button(panel, text="−", width=2, style="Dash.TButton", command=self._toggle_cluster_panel)
+        self.cluster_panel_toggle.place(relx=1.0, y=0, anchor="ne")
         panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         body = self._body(panel)
         self.cluster_canvas = tk.Canvas(body, width=255, height=150, bg="#000306", highlightbackground=self.BORDER, highlightthickness=1)
@@ -296,7 +365,7 @@ class SimulatorView:
         self.cluster_canvas.bind("<Button-1>", self._select_cluster_from_preview)
         info = ttk.Frame(body, style="Panel.TFrame")
         info.grid(row=1, column=1, sticky="nsew")
-        self.cluster_info = ttk.Label(info, text="Clusters: 0\nLargest: 0\nMean Size: 0.0\nPersistence: 0.00", style="Body.TLabel", justify=tk.LEFT)
+        self.cluster_info = ttk.Label(info, text="Clusters: 0\nLargest: 0\nMean Size: 0.0\nTracker Persistence: 0.00", style="Body.TLabel", justify=tk.LEFT)
         self.cluster_info.pack(anchor="nw", pady=(3, 10))
         self.cluster_detail = ttk.Label(info, text="Select a cluster to inspect", style="Body.TLabel", justify=tk.LEFT)
         self.cluster_detail.pack(anchor="nw", pady=(0, 6))
@@ -311,6 +380,10 @@ class SimulatorView:
 
     def _build_event_panel(self, parent: ttk.Frame) -> None:
         panel = self._panel(parent, "Event Log")
+        self.event_panel = panel
+        self.event_panel_collapsed = False
+        self.event_panel_toggle = ttk.Button(panel, text="−", width=2, style="Dash.TButton", command=self._toggle_event_panel)
+        self.event_panel_toggle.place(relx=1.0, y=0, anchor="ne")
         panel.grid(row=0, column=2, sticky="nsew")
         body = self._body(panel)
         ttk.Button(body, text="Clear", style="Dash.TButton", command=self._clear_events).place(relx=1.0, y=-5, anchor="ne")
@@ -318,11 +391,92 @@ class SimulatorView:
         self.event_text.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
         self.event_text.configure(state=tk.DISABLED)
 
+    def _toggle_cluster_panel(self) -> None:
+        self.cluster_panel_collapsed = not self.cluster_panel_collapsed
+        if self.cluster_panel_collapsed:
+            self._body(self.cluster_panel).pack_forget()
+            self.cluster_panel_toggle.configure(text="+")
+        else:
+            self._body(self.cluster_panel).pack(fill=tk.BOTH, expand=True)
+            self.cluster_panel_toggle.configure(text="−")
+        self.bottom.update_idletasks()
+
+    def _toggle_event_panel(self) -> None:
+        self.event_panel_collapsed = not self.event_panel_collapsed
+        if self.event_panel_collapsed:
+            self._body(self.event_panel).pack_forget()
+            self.event_panel_toggle.configure(text="+")
+        else:
+            self._body(self.event_panel).pack(fill=tk.BOTH, expand=True)
+            self.event_panel_toggle.configure(text="−")
+        self.bottom.update_idletasks()
+
     def _build_footer(self, root: ttk.Frame) -> None:
         footer = ttk.Frame(root, style="Dashboard.TFrame")
+        self.footer = footer
         footer.grid(row=4, column=0, sticky="ew", pady=(4, 5))
         ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel").pack(side=tk.LEFT)
         ttk.Label(footer, text="●  Project SIGNAL  |  v0.1.0  |  Phase 1 — Core Simulation Engine", style="Status.TLabel").pack(side=tk.RIGHT)
+
+    def toggle_fullscreen_simulation(self) -> None:
+        """Show only the particle viewport, preserving Esc/F11 to return."""
+        if self.fullscreen_view:
+            self.exit_fullscreen_simulation()
+            return
+        self.fullscreen_view = True
+        for widget in (self.header, self.nav, self.left, self.right, self.bottom, self.footer, self.time_series_panel):
+            widget.grid_remove()
+        self.workspace.grid_configure(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        # The dashboard columns retain their minsize values after widgets are
+        # hidden. Clear them or the old left/right panels continue consuming
+        # fullscreen width even though they are no longer visible.
+        for column in range(3):
+            self.workspace.columnconfigure(column, weight=0, minsize=0)
+        self.workspace.columnconfigure(0, weight=1, minsize=0)
+        self.center.grid_configure(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        self.view_panel.grid_configure(row=0, column=0, sticky="nsew", pady=0)
+        self.center.rowconfigure(0, weight=1)
+        self.center.columnconfigure(0, weight=1)
+        self.view_panel.rowconfigure(1, weight=1)
+        self.view_panel.columnconfigure(0, weight=1)
+        self.canvas.pack_configure(fill=tk.BOTH, expand=True)
+        self.dashboard_root.rowconfigure(0, weight=1)
+        self.dashboard_root.rowconfigure(2, weight=0)
+        self.root.attributes("-fullscreen", True)
+        self.status_var.set("Fullscreen simulation — press Esc or F11 to return")
+        self.root.after(50, self._resize_fullscreen_view)
+
+    def exit_fullscreen_simulation(self) -> None:
+        """Restore the dashboard layout after fullscreen simulation mode."""
+        if not self.fullscreen_view:
+            return
+        self.fullscreen_view = False
+        self.root.attributes("-fullscreen", False)
+        self.header.grid()
+        self.nav.grid()
+        self.left.grid()
+        self.right.grid()
+        self.bottom.grid()
+        self.footer.grid()
+        self.time_series_panel.grid()
+        self.workspace.grid_configure(row=2, column=0, sticky="nsew")
+        self.workspace.columnconfigure(0, weight=0, minsize=225)
+        self.workspace.columnconfigure(1, weight=1, minsize=560)
+        self.workspace.columnconfigure(2, weight=0, minsize=455)
+        self.center.grid_configure(row=0, column=1, sticky="nsew", padx=(0, 8))
+        self.view_panel.grid_configure(row=0, column=0, sticky="nsew", pady=(0, 8))
+        self.dashboard_root.rowconfigure(0, weight=0)
+        self.dashboard_root.rowconfigure(2, weight=1)
+        self.status_var.set("Ready")
+        self.root.after(50, self._draw)
+
+    def _resize_fullscreen_view(self) -> None:
+        """Reflow the Tk canvas after the window manager enters fullscreen."""
+        if not self.fullscreen_view:
+            return
+        self.root.update_idletasks()
+        self.canvas.pack_configure(fill=tk.BOTH, expand=True)
+        self._draw()
 
     def _build_legend(self) -> None:
         for index, label in enumerate(("Species 0", "Species 1", "Species 2")):
@@ -342,6 +496,9 @@ class SimulatorView:
         self._draw_chart()
 
     def _nav_notice(self, name: str) -> None:
+        if name == "Experiment":
+            self._open_experiment_window()
+            return
         if name == "Search":
             self._open_search_window()
             return
@@ -365,7 +522,7 @@ class SimulatorView:
         ttk.Label(body, text="Edit the experiment size before starting the next run.", style="Status.TLabel").pack(anchor="w", pady=(0, 12))
         form = ttk.Frame(body, style="Dashboard.TFrame")
         form.pack(fill=tk.X)
-        fields = (("Genomes / runs", "runs", "1,000"), ("Steps per run", "steps", "5,000"), ("Particles / universe", "particles", "1,000"), ("Minimum cluster size", "min_cluster_size", "20"), ("Persistence threshold", "persistence_threshold", "0.55"))
+        fields = (("Genomes / runs", "runs", "1,000"), ("Steps per genome", "steps", "5,000"), ("Particles / universe", "particles", "1,000"), ("Minimum detector cluster size", "minimum_cluster_size", "20"), ("Tracker persistence threshold", "tracker_persistence_threshold", "0.55"))
         self.search_vars: dict[str, tk.StringVar] = {}
         for row, (label, key, default) in enumerate(fields):
             self.search_vars[key] = tk.StringVar(value=default)
@@ -377,6 +534,18 @@ class SimulatorView:
         ttk.Button(actions, text="STOP SEARCH", style="Dash.TButton", command=self._stop_search).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
         self.search_status = ttk.Label(body, text="Ready", style="Status.TLabel")
         self.search_status.pack(anchor="w", pady=(0, 6))
+        self.search_progress_vars = {key: tk.StringVar(value=value) for key, value in {
+            "genomes": "Genome 0 / 1,000   0.0%",
+            "steps": "Simulation steps completed: 0",
+            "elapsed": "Elapsed time: 00:00:00",
+            "remaining": "Estimated remaining time: --",
+            "candidates": "Candidates discovered: 0",
+            "best": "Best structure score: 0.0000",
+        }.items()}
+        progress_panel = ttk.Frame(body, style="Dashboard.TFrame")
+        progress_panel.pack(fill=tk.X, pady=(0, 8))
+        for row, key in enumerate(("genomes", "steps", "elapsed", "remaining", "candidates", "best")):
+            ttk.Label(progress_panel, textvariable=self.search_progress_vars[key], style="Status.TLabel").grid(row=row // 2, column=row % 2, sticky="w", padx=(0, 20), pady=2)
         self.search_log = tk.Text(body, height=13, bg="#07131c", fg=self.TEXT, relief="flat", font=("Consolas", 9))
         self.search_log.pack(fill=tk.BOTH, expand=True)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
@@ -386,8 +555,8 @@ class SimulatorView:
             return
         try:
             values = {key: float(variable.get().replace(",", "").strip()) for key, variable in self.search_vars.items()}
-            config = SearchConfig(runs=int(values["runs"]), steps=int(values["steps"]), particle_count=int(values["particles"]), min_cluster_size=int(values["min_cluster_size"]), persistence_threshold=values["persistence_threshold"], stop_event=Event())
-            if config.runs < 1 or config.steps < 1 or config.particle_count < 1 or config.min_cluster_size < 1:
+            config = SearchConfig(runs=int(values["runs"]), steps=int(values["steps"]), particle_count=int(values["particles"]), minimum_cluster_size=int(values["minimum_cluster_size"]), tracker_persistence_threshold=values["tracker_persistence_threshold"], stop_event=Event())
+            if config.runs < 1 or config.steps < 1 or config.particle_count < 1 or config.minimum_cluster_size < 1:
                 raise ValueError("Runs, steps, particles, and minimum cluster size must be positive")
         except (ValueError, tk.TclError) as error:
             messagebox.showerror("Invalid search settings", str(error))
@@ -395,6 +564,7 @@ class SimulatorView:
         self.search_stop_event = config.stop_event
         self.search_log.delete("1.0", tk.END)
         self.search_status.configure(text="Search running...")
+        self._search_started_at = time.monotonic()
         self._log("Persistent structure search started")
         self.search_thread = Thread(target=self._run_search_worker, args=(config,), daemon=True)
         self.search_thread.start()
@@ -402,9 +572,15 @@ class SimulatorView:
     def _run_search_worker(self, config: SearchConfig) -> None:
         def progress(line: str) -> None:
             self.root.after(0, lambda text=line: self._append_search_log(text))
+
+        def progress_state(state: dict[str, object]) -> None:
+            self.root.after(0, lambda snapshot=dict(state): self._update_search_progress(snapshot))
         try:
-            results = run_search(config, progress=progress)
-            self.root.after(0, lambda: self.search_status.configure(text=f"Search complete — {len(results)} runs processed"))
+            results = run_search(config, progress=progress, progress_state=progress_state)
+            existing = load_baseline_rows(config.result_root, config.experiment_id)
+            complete = sum(1 for row in existing if row.get("status") == "COMPLETED")
+            status = "Search complete" if complete >= config.runs else "Search stopped - completed results committed"
+            self.root.after(0, lambda: self.search_status.configure(text=f"{status} ({complete} genomes recorded)"))
         except Exception as error:  # surface worker errors in the UI without crashing Tk
             message = str(error)
             self.root.after(0, lambda: self.search_status.configure(text=f"Search failed: {message}"))
@@ -419,38 +595,168 @@ class SimulatorView:
     def _stop_search(self) -> None:
         if self.search_stop_event is not None:
             self.search_stop_event.set()
-            self.search_status.configure(text="Stop requested; current run will finish")
+            self.search_status.configure(text="Stop requested; committing completed genomes...")
+
+    def _update_search_progress(self, state: dict[str, object]) -> None:
+        if not hasattr(self, "search_progress_vars"):
+            return
+        completed = int(state.get("completed_runs", 0))
+        total = int(state.get("total_runs", 1))
+        percent = float(state.get("percent", 0.0))
+        elapsed = float(state.get("elapsed_seconds", 0.0))
+        remaining = float(state.get("estimated_remaining_seconds", 0.0))
+        steps = int(state.get("simulation_steps_completed", 0))
+        candidates = int(state.get("candidates_discovered", 0))
+        best = float(state.get("best_structure_score", 0.0))
+        self.search_progress_vars["genomes"].set(f"Genome {completed} / {total:,}   {percent:.1f}%")
+        self.search_progress_vars["steps"].set(f"Simulation steps completed: {steps:,}")
+        self.search_progress_vars["elapsed"].set(f"Elapsed time: {self._format_duration(elapsed)}")
+        self.search_progress_vars["remaining"].set(f"Estimated remaining time: {self._format_duration(remaining) if completed else '--'}")
+        self.search_progress_vars["candidates"].set(f"Candidates discovered: {candidates}")
+        self.search_progress_vars["best"].set(f"Best structure score: {best:.4f}")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def _open_results_window(self) -> None:
         window = tk.Toplevel(self.root)
         window.title("Project SIGNAL — Search Results")
-        window.geometry("900x500")
+        window.geometry("1280x560")
         window.configure(bg=self.BG)
         body = ttk.Frame(window, style="Dashboard.TFrame", padding=12)
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(body, text="Structure Search Results", style="Title.TLabel").pack(anchor="w", pady=(0, 10))
-        columns = ("genome", "seed", "best_cluster", "particles", "lifetime", "persistence", "status", "candidate_path")
+        actions = ttk.Frame(body, style="Dashboard.TFrame")
+        actions.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(actions, text="Export PDF / Excel / CSV / JSON...", style="Dash.TButton", command=self._export_results_dialog).pack(side=tk.LEFT)
+        columns = ("run", "status", "genome_hash", "seed", "clusters", "persistent", "macro", "structure_score", "lifetime", "particles", "cohesion", "identity", "shape", "dynamics", "bridge_fraction", "candidate", "candidate_path")
         tree = ttk.Treeview(body, columns=columns, show="headings")
-        headings = {"genome": "Genome", "seed": "Seed", "best_cluster": "Best Cluster", "particles": "Particles", "lifetime": "Lifetime", "persistence": "Persistence", "status": "Status", "candidate_path": "Candidate Path"}
+        headings = {"run": "Genome #", "status": "Status", "genome_hash": "Genome Hash", "seed": "Seed", "clusters": "Clusters", "persistent": "Persistent", "macro": "Macro", "structure_score": "Structure Score", "lifetime": "Lifetime", "particles": "Particle Count", "cohesion": "Cohesion", "identity": "Identity", "shape": "Shape", "dynamics": "Dynamics", "bridge_fraction": "Bridge Fraction", "candidate": "Candidate", "candidate_path": "Candidate Path"}
+        numeric_columns = {"run", "seed", "clusters", "persistent", "macro", "structure_score", "lifetime", "particles", "cohesion", "identity", "shape", "dynamics", "bridge_fraction"}
         for column in columns:
-            tree.heading(column, text=headings[column])
-            tree.column(column, width=105 if column != "candidate_path" else 260, anchor="w")
+            tree.heading(column, text=headings[column], command=lambda key=column: self._sort_results_tree(tree, key, False))
+            tree.column(column, width=100 if column not in {"genome_hash", "candidate_path"} else 240, anchor="e" if column in numeric_columns else "w")
         tree.pack(fill=tk.BOTH, expand=True)
-        csv_path = Path("results/search_results.csv")
-        if csv_path.exists():
-            with csv_path.open(newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    tree.insert("", tk.END, values=tuple(row.get(column, "") for column in columns))
+        rows = load_baseline_rows()
+        if rows:
+            for row in rows:
+                values = (row.get("run", ""), row.get("status", ""), row.get("genome_hash", ""), row.get("seed", ""), row.get("clusters_detected", ""), row.get("persistent_clusters", ""), row.get("macro_clusters", ""), row.get("best_structure_score", ""), row.get("best_candidate_lifetime", ""), row.get("best_candidate_particle_count", ""), row.get("best_cohesion", ""), row.get("best_identity", ""), row.get("best_shape", ""), row.get("best_dynamics", ""), row.get("best_bridge_fraction", ""), "YES" if row.get("candidate") else "NO", row.get("candidate_path", ""))
+                tree.insert("", tk.END, values=values)
         else:
-            tree.insert("", tk.END, values=("No search results yet", "", "", "", "", "", "", ""))
+            tree.insert("", tk.END, values=("No baseline results yet",) + ("",) * (len(columns) - 1))
         tree.bind("<Double-1>", lambda _event: self._load_result_row(tree))
+
+    def _sort_results_tree(self, tree: ttk.Treeview, column: str, descending: bool) -> None:
+        """Sort baseline rows by a requested numeric or text metric."""
+        items = [(tree.set(item, column), item) for item in tree.get_children("")]
+        if column in {"status", "genome_hash", "candidate_path"}:
+            items.sort(key=lambda item: item[0], reverse=descending)
+        else:
+            def numeric(item: tuple[str, str]) -> float:
+                try:
+                    return float(item[0])
+                except (TypeError, ValueError):
+                    return float("-inf")
+            items.sort(key=numeric, reverse=descending)
+        for position, (_value, item) in enumerate(items):
+            tree.move(item, "", position)
+        tree.heading(column, command=lambda: self._sort_results_tree(tree, column, not descending))
+
+    def _export_results_dialog(self) -> None:
+        """Export one consistent snapshot of the live simulation and search results."""
+        output_dir = filedialog.askdirectory(title="Choose an export folder")
+        if not output_dir:
+            return
+        try:
+            data = collect_export_data(self.engine, self.current_clusters, self.history, self.events)
+            exported = export_all(data, output_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            messagebox.showerror("Export failed", str(error))
+            self._log(f"Export failed: {error}")
+            return
+        self._log(f"Results exported to {Path(output_dir).name}")
+        excel_line = (
+            Path(exported["xlsx"]).name
+            if "xlsx" in exported
+            else "Excel: not created (install openpyxl from requirements.txt)"
+        )
+        messagebox.showinfo(
+            "Export complete",
+            "Created:\n"
+            f"{excel_line}\n"
+            f"{Path(exported['pdf']).name}\n"
+            f"{Path(exported['json']).name}\n"
+            f"{len(exported['csv'])} CSV files",
+        )
+
+    def _three_view_state(self) -> dict[str, object]:
+        """Return a JSON-safe copy of the live state for the WebGL viewer."""
+        positions = np.asarray(self.engine.state.positions, dtype=np.float32)
+        velocities = np.asarray(self.engine.state.velocities, dtype=np.float32)
+        species = np.asarray(self.engine.state.species, dtype=np.int8)
+        clusters = [
+            {
+                "cluster_id": int(cluster.cluster_id),
+                "classification": cluster.classification,
+                "size_class": cluster.size_class,
+                "particle_count": int(cluster.particle_count),
+                "age_steps": int(cluster.age_steps),
+                "centroid_x": float(cluster.centroid[0]),
+                "centroid_y": float(cluster.centroid[1]),
+                "radius": float(cluster.radius),
+                "tracker_persistence_score": float(cluster.tracker_persistence_score),
+                "structure_score": float(cluster.structure_score),
+                "cohesion_score": float(cluster.cohesion_score),
+                "identity_score": float(cluster.identity_score),
+                "shape_score": float(cluster.shape_score),
+                "dynamic_score": float(cluster.dynamic_score),
+                "bridge_fraction": float(cluster.bridge_fraction),
+                "particle_ids": sorted(int(value) for value in cluster.particle_ids),
+            }
+            for cluster in self.current_clusters
+        ]
+        networks = [network.to_dict() for network in self.current_networks]
+        return {
+            "width": float(self.engine.config.width),
+            "height": float(self.engine.config.height),
+            "step": int(self.engine.step_count),
+            "particle_count": int(self.engine.state.count),
+            "interaction_radius": float(self.engine.genome.interaction_radius),
+            "selected_cluster_id": self.selected_cluster_id,
+            "ids": np.asarray(self.engine.state.ids, dtype=np.int64).tolist(),
+            "positions": positions.tolist(),
+            "velocities": velocities.tolist(),
+            "species": species.tolist(),
+            "clusters": clusters,
+            "networks": networks,
+            "network_debug": bool(self.show_structure_debug.get()),
+        }
+
+    def open_three_view(self) -> None:
+        """Open or focus the GPU-accelerated Three.js particle view."""
+        if self.three_viewer is None:
+            self.three_viewer = ThreeViewerServer(self._three_view_state)
+        url = self.three_viewer.start()
+        webbrowser.open(url)
+        self._log("Three.js WebGL particle view opened")
+        self.status_var.set("Three.js particle view opened in your browser")
+
+    def close(self) -> None:
+        """Stop local services before closing the desktop dashboard."""
+        if self.three_viewer is not None:
+            self.three_viewer.stop()
+        self.root.destroy()
 
     def _load_result_row(self, tree: ttk.Treeview) -> None:
         selection = tree.selection()
         if not selection:
             return
         values = tree.item(selection[0], "values")
-        path = values[7] if len(values) > 7 else ""
+        path = values[-1] if values else ""
         if not path:
             return
         try:
@@ -547,7 +853,10 @@ class SimulatorView:
 
     def _reset_tracker(self) -> None:
         self.cluster_tracker = ClusterTracker(self.engine.config.width, self.engine.config.height, self.engine.genome.interaction_radius, min_cluster_size=5)
+        self.network_tracker = NetworkTracker(self.engine.config.width, self.engine.config.height, self.engine.genome.interaction_radius)
         self.current_clusters = []
+        self.current_networks = []
+        self.saved_network_ids = set()
         self.selected_cluster_id = None
         self.next_cluster_observation_step = 0
         self.last_metrics_step = -1
@@ -609,8 +918,18 @@ class SimulatorView:
         if self.engine.step_count >= self.next_cluster_observation_step:
             tracking = self.cluster_tracker.update(self.engine.state, self.engine.step_count)
             self.current_clusters = tracking.clusters
+            self.current_networks = self.network_tracker.update(self.engine.state, tracking.clusters, self.engine.step_count)
             self.next_cluster_observation_step = self.engine.step_count + 10
             self._handle_cluster_events(tracking.events)
+            self._handle_network_events(self.network_tracker.last_events)
+            for network in self.current_networks:
+                if network.is_candidate and network.network_id not in self.saved_network_ids:
+                    try:
+                        destination = save_network_snapshot(self.engine, network)
+                        self.saved_network_ids.add(network.network_id)
+                        self._log(f"Network candidate saved: {destination.name}")
+                    except OSError as error:
+                        self._log(f"Network snapshot failed: {error}")
             if self.selected_cluster_id not in {cluster.cluster_id for cluster in self.current_clusters}:
                 self.selected_cluster_id = None
         speeds = np.linalg.norm(self.engine.state.velocities, axis=1)
@@ -637,7 +956,7 @@ class SimulatorView:
         self.history["Coherence"].append(coherence)
         proportions = np.bincount(self.engine.state.species, minlength=3) / max(len(self.engine.state.species), 1)
         self._draw_pie(proportions)
-        self.cluster_info.configure(text=f"Clusters: {cluster_count}\nLargest: {largest_cluster}\nMean Size: {len(self.engine.state.ids) / max(cluster_count, 1):.1f}\nPersistence: {min(0.99, 0.45 + self.engine.step_count / 3000):.2f}")
+        self.cluster_info.configure(text=f"Clusters: {cluster_count}\nLargest: {largest_cluster}\nMean Size: {len(self.engine.state.ids) / max(cluster_count, 1):.1f}\nTracker Persistence: {min(0.99, 0.45 + self.engine.step_count / 3000):.2f}")
         for index, label in enumerate(self.cluster_legend):
             size = max(0, int(largest_cluster * (0.66 ** index)))
             label.configure(text=f"■  Cluster {index + 1} ({size})")
@@ -664,6 +983,12 @@ class SimulatorView:
                         self._log(f"Structure snapshot saved: {destination.name}")
                     except OSError as error:
                         self._log(f"Structure snapshot failed: {error}")
+
+    def _handle_network_events(self, events: list[object]) -> None:
+        """Log only persistent network topology changes."""
+        for event in events:
+            if getattr(event, "kind", "") in {"node_persistent", "edge_persistent", "edge_dissolved", "topology_changed", "became_persistent", "dissolved"}:
+                self._log(event.message)
 
     def _coarse_clusters(self) -> tuple[int, int]:
         coords = (self.engine.state.positions / np.array([self.engine.config.width, self.engine.config.height]) * 12).astype(int) % 12
@@ -831,7 +1156,7 @@ class SimulatorView:
             self._draw_cluster_history()
             return
         composition = ", ".join(f"S{i}: {value * 100:.0f}%" for i, value in enumerate(cluster.species_distribution[:3]))
-        self.cluster_detail.configure(text=f"C{cluster.cluster_id}  {cluster.classification}\nParticles: {cluster.particle_count}   Age: {cluster.age_steps}\nStructure: {cluster.structure_score:.2f}   Rg: {cluster.radius_of_gyration:.1f}   Diameter: {cluster.diameter:.1f}\nCohesion: {cluster.cohesion_score:.2f}   Identity: {cluster.identity_score:.2f}\nShape: {cluster.shape_score:.2f}   Dynamics: {cluster.dynamic_score:.2f}   Lifetime: {cluster.lifetime_score:.2f}\nVelocity: ({cluster.mean_velocity[0]:.2f}, {cluster.mean_velocity[1]:.2f})\nSpecies: {composition}\nBridges: {cluster.bridge_fraction:.2f}   Degree: {cluster.average_degree:.1f}")
+        self.cluster_detail.configure(text=f"C{cluster.cluster_id}  {cluster.classification}  ({cluster.size_class})\nParticles: {cluster.particle_count}   Age: {cluster.age_steps}\nTracker Persistence: {cluster.tracker_persistence_score:.2f}\nStructure Score: {cluster.structure_score:.2f}   Rg: {cluster.radius_of_gyration:.1f}   Diameter: {cluster.diameter:.1f}\nCohesion: {cluster.cohesion_score:.2f}   Identity Score: {cluster.identity_score:.2f}\nShape Score: {cluster.shape_score:.2f}   Dynamics: {cluster.dynamic_score:.2f}   Lifetime Score: {cluster.lifetime_score:.2f}\nVelocity: ({cluster.mean_velocity[0]:.2f}, {cluster.mean_velocity[1]:.2f})\nSpecies: {composition}\nBridges: {cluster.bridge_fraction:.2f}   Degree: {cluster.average_degree:.1f}")
         self._draw_cluster_history()
 
     def _draw_cluster_history(self) -> None:
