@@ -1,0 +1,45 @@
+STRUCTURE DETECTOR VALIDATION
+
+Compact moving blob:
+  Cohesion         0.90 PASS
+  Structure        0.37 PASS
+  Detail           compact local graph
+
+Bridged blobs:
+  Structure        0.33 PASS
+  Bridge Fraction  0.10
+  Compactness      0.55
+  Detail           sparse bridge is penalized
+
+Uniform random cloud:
+  Structure        0.32 PASS
+  Detail           no persistent cohesive component
+
+Expanding cloud:
+  Structure        0.55 PASS
+  Rg CV            0.35
+  Shape            0.27
+  Detail           growing Rg lowers temporal shape score
+
+Frozen crystal:
+  Cohesion         0.80 PASS
+  Dynamics         0.00 PASS
+  Detail           cohesive but frozen
+
+Dynamic circulation:
+  Structure        0.85 PASS
+  Dynamics         1.00 PASS
+  Detail           nonzero internal circulation
+
+Two structures crossing:
+  Identity         1.00 PASS
+  Tracked          2.00
+  Detail           particle IDs preserved during a pass
+
+Toroidal boundary crossing:
+  Identity         1.00 PASS
+  Centroid X       1.00
+  Rg               5.00
+  Detail           minimum-image centroid and identity
+
+8/8 VALIDATION TESTS PASSED

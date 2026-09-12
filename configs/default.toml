@@ -1,0 +1,25 @@
+[world]
+width = 1000.0
+height = 1000.0
+
+[particles]
+count = 1000
+species = 3
+
+[physics]
+interaction_radius = 60.0
+core_radius_ratio = 0.18
+core_repulsion = 1.0
+force_gain = 1.0
+damping = 0.94
+dt = 0.1
+
+[viewer]
+canvas_size = 800
+target_fps = 60
+
+[structure_detection]
+observation_interval = 10
+minimum_cluster_size = 20
+minimum_membership_overlap = 0.40
+persistence_threshold = 0.55
